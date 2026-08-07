@@ -530,5 +530,16 @@ if (probe.status === 503) {
 } else {
   showGate();
 }
-setInterval(() => { if ($('#gate').style.display !== 'flex') loadWave(false); }, 30000);
+// Poll only while the tab is actually visible, and refresh immediately on
+// return. Deployers work in the MDS tab with this one behind it, so a blind
+// 30s timer spends most of its invocations rendering to nobody — and on the
+// free tier those invocations are the scarce resource, not bandwidth. An 8h
+// shift is ~960 polls per open tab; this cuts it to the minutes in use.
+setInterval(() => {
+  if (document.hidden || $('#gate').style.display === 'flex') return;
+  loadWave(false);
+}, 30000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && $('#gate').style.display !== 'flex') loadWave(false);
+});
 </script>
