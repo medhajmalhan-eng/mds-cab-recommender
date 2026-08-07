@@ -34,7 +34,7 @@ concurrency:
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -78,7 +78,8 @@ jobs:
           MDS_EMAIL: ${{ secrets.MDS_EMAIL }}
           MDS_PASSWORD: ${{ secrets.MDS_PASSWORD }}
           SHADOW_BUIDS: ${{ vars.SHADOW_BUIDS }}
-          SHADOW_SAMPLE: ${{ vars.SHADOW_SAMPLE || 30 }}
+          SHADOW_SAMPLE: ${{ vars.SHADOW_SAMPLE || 8 }}
+          SHADOW_MAX_PREDICTIONS: ${{ vars.SHADOW_MAX_PREDICTIONS || 60 }}
         run: node scripts/shadow-sweep.mjs
 
       - name: Commit predictions

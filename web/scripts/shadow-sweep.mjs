@@ -1,7 +1,7 @@
 // Predict every open trip, before anyone assigns it, and write down what we said.
 //
-//   node scripts/shadow-sweep.mjs                    all BUs in data/
-//   node scripts/shadow-sweep.mjs --buid goc-GocHyd --sample 40
+//   node scripts/shadow-sweep.mjs                    rotating slice of the BUs
+//   node scripts/shadow-sweep.mjs --buid goc-GocHyd  just one
 //
 // WHY THIS EXISTS
 // ---------------
@@ -26,9 +26,20 @@
 // twice while building this, in both directions, and it is invisible unless you
 // are looking for it.
 //
+// BUDGET
+// ------
+// A run costs BUs x days x trips x one MDS pool call each. Unbounded across all
+// 32 BUs that was ~45 minutes and hit the Actions timeout. Now it is capped at
+// 60 predictions, 8 per BU-day, entering the volume-ordered BU list at a
+// rotating offset — 77 seconds, spread over ~11 BU-days, and every site reached
+// over the course of a day. Measurement wants breadth over time, not everything
+// at once.
+//
 // Env: MDS_EMAIL (or MDS_USERNAME), MDS_PASSWORD
-//      SHADOW_BUIDS   optional comma list; default = every shard in data/
-//      SHADOW_SAMPLE  max trips logged per BU per run (default 30)
+//      SHADOW_BUIDS           optional comma list; default = volume-ordered, thin BUs dropped
+//      SHADOW_SAMPLE          trips per BU per day (default 8)
+//      SHADOW_MAX_PREDICTIONS ceiling for the whole run (default 60)
+//      SHADOW_MIN_HISTORY     skip BUs with less 30-day history than this (default 2000)
 
 import { readFile, readdir, mkdir, appendFile } from 'node:fs/promises';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -41,7 +52,38 @@ import {
 
 const DATA = path.join(process.cwd(), 'data');
 const OUT = path.join(process.cwd(), '..', 'shadow');
-const SAMPLE = +(process.env.SHADOW_SAMPLE || 30);
+// Per BU per day. Deliberately small: a run that spends its whole budget on one
+// BU measures one BU. Eight apiece spreads a 60-prediction run across seven or
+// eight BU-days, which is what makes the per-site breakdown meaningful.
+const SAMPLE = +(process.env.SHADOW_SAMPLE || 8);
+// Below this much 30-day history a BU cannot be scored meaningfully — most cabs
+// have no rows at the office, so everything lands in the "no history" bucket and
+// the ranking is deadhead order. Sweeping them wastes budget the real sites need.
+const MIN_HISTORY = +(process.env.SHADOW_MIN_HISTORY || 2000);
+
+// A run has to finish inside the Actions timeout, and its cost is
+// BUs x days x trips x one MDS pool call each. Sweeping all 32 BUs unbounded
+// took ~45s per BU-day and blew past 25 minutes on the first attempt.
+//
+// So the run is bounded two ways: a hard ceiling on predictions, and BU
+// ROTATION. Each run starts at a different offset in the BU list, so over a day
+// every BU gets sampled without any single run being enormous. Measurement wants
+// breadth over time, not everything at once.
+const MAX_PREDICTIONS = +(process.env.SHADOW_MAX_PREDICTIONS || 60);
+const POOL_CONCURRENCY = 4;      // parallel vehicle-pool fetches; MDS limits unknown
+
+/** Run async fn over items with bounded concurrency, preserving input order. */
+async function mapPool(items, n, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) {
+      const k = i++;
+      out[k] = await fn(items[k]);
+    }
+  }));
+  return out;
+}
 
 const arg = (k, d) => {
   const i = process.argv.indexOf(`--${k}`);
@@ -116,7 +158,7 @@ function sampleAcrossWaves(open, n) {
   return picked;
 }
 
-async function sweepBu(buid, day, stamp) {
+async function sweepBu(buid, day, stamp, budget) {
   const shard = await shardFor(buid);
   const guids = await vendorGuids(buid);
   const dayMs = Date.parse(`${day}T00:00:00+05:30`);
@@ -135,19 +177,25 @@ async function sweepBu(buid, day, stamp) {
   const open = slim.filter((t) => !t.assigned && t.tripGuid);
   if (!open.length) return { buid, open: 0, logged: 0 };
 
-  const picked = sampleAcrossWaves(open, SAMPLE);
+  const picked = sampleAcrossWaves(open, Math.min(SAMPLE, budget));
   const lines = [];
   const histCache = new Map();
 
-  for (const trip of picked) {
+  // Fetch every pool for this BU up front, in parallel. Serially this was ~1.2s
+  // per trip and dominated the run; the scoring itself is ~3ms.
+  const fetched = await mapPool(picked, POOL_CONCURRENCY, async (trip) => {
+    const cross = !hasVendor(trip);
+    const proxies = pickProxies(slim, trip, cross);
+    const pools = await Promise.all(proxies.map((p) =>
+      vehicles(buid, p.guid).then((v) => [p, v]).catch(() => [p, []])));
+    return { trip, cross, pools };
+  });
+
+  for (const { trip, cross, pools } of fetched) {
     try {
       // Layer follows what the screen would do unprompted: same-vendor when the
-      // trip has a vendor, any-vendor when it does not.
-      const cross = !hasVendor(trip);
-      const proxies = pickProxies(slim, trip, cross);
-      const pools = await Promise.all(proxies.map((p) =>
-        vehicles(buid, p.guid).then((v) => [p, v]).catch(() => [p, []])));
-
+      // trip has a vendor, any-vendor when it does not. (Decided during the
+      // parallel fetch above, so it travels with the pool.)
       const pool = [];
       for (const [p, cabs] of pools) {
         for (const c of cabs) {
@@ -240,8 +288,15 @@ async function main() {
   if (only) {
     buids = only.split(',').map((s) => s.trim()).filter(Boolean);
   } else {
-    buids = (await readdir(DATA)).filter((f) => f.endsWith('.json.gz'))
-      .map((f) => f.replace(/\.json\.gz$/, ''));
+    // Volume order, thin BUs dropped. buids.json is written by the same build
+    // that produced the shards, so this can never disagree with what is on disk.
+    const idx = JSON.parse(await readFile(path.join(DATA, 'buids.json'), 'utf8'));
+    const all = idx.buids || [];
+    buids = all.filter((b) => b.trips_30d >= MIN_HISTORY)
+               .sort((a, b) => b.trips_30d - a.trips_30d)
+               .map((b) => b.buid);
+    const dropped = all.length - buids.length;
+    if (dropped) console.log(`skipping ${dropped} BU(s) with <${MIN_HISTORY} trips of history`);
   }
 
   const now = new Date();
@@ -254,12 +309,23 @@ async function main() {
   const tomorrow = iso(new Date(istNow.getTime() + 86400e3));
   const days = istNow.getUTCHours() >= 16 ? [today, tomorrow] : [today];
 
-  console.log(`sweep ${stamp} | ${buids.length} BU(s) | days ${days.join(', ')}`);
+  // Rotate the starting point so successive runs cover different BUs. With 12
+  // runs a day and a 60-prediction ceiling, every BU is reached regularly
+  // without any one run trying to do all 32.
+  // Already in volume order; rotate the entry point so successive runs start on
+  // different sites and every BU is reached over the day.
+  const offset = Math.floor(Date.now() / 7200e3) % buids.length;
+  buids = [...buids.slice(offset), ...buids.slice(0, offset)];
+
+  console.log(`sweep ${stamp} | ${buids.length} BU(s), starting at ${buids[0]} | ` +
+              `days ${days.join(', ')} | cap ${MAX_PREDICTIONS}`);
   let total = 0;
+  outer:
   for (const buid of buids) {
     for (const day of days) {
+      if (total >= MAX_PREDICTIONS) break outer;
       try {
-        const r = await sweepBu(buid, day, stamp);
+        const r = await sweepBu(buid, day, stamp, MAX_PREDICTIONS - total);
         if (r.logged) console.log(`   ${buid} ${day}: ${r.logged} logged of ${r.open} open`);
         total += r.logged;
       } catch (e) {
