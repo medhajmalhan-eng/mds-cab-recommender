@@ -1,0 +1,100 @@
+# Predict open trips every two hours and write down what we said.
+#
+# The deployer does nothing. They keep working in MDS exactly as today; this
+# predicts beforehand and shadow-reconcile.yml marks the homework next morning.
+# That is what lets accuracy be measured BEFORE anyone is asked to trust the
+# tool — the deadlock this whole thing exists to break.
+#
+# Cadence comes from the data, not a guess: cabs are assigned 2.5 hours before
+# the trip on average and 92% within 6 hours, so a trip's "open" window is hours.
+# Two-hourly catches nearly all of them while still genuinely undecided.
+#
+# SECRETS REQUIRED (Settings -> Secrets and variables -> Actions):
+#   MDS_EMAIL, MDS_PASSWORD          the CDS login
+#   APPS_SCRIPT_EXEC_URL, APPS_SCRIPT_TOKEN, METABASE_CARD_ID
+#                                    only used on the first run of each day,
+#                                    to build the history the scorer needs
+
+name: shadow sweep
+
+on:
+  schedule:
+    # Every 2h at :17 — off the hour on purpose. Scheduled jobs at :00 are the
+    # most contended slot on GitHub's queue and get delayed the most.
+    - cron: '17 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  # Two sweeps appending to the same day file and racing to commit is a merge
+  # conflict for no benefit. Skip rather than queue: the next slot is 2h away
+  # and a missed sample costs nothing.
+  group: shadow-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The 30-day history is ~4 minutes to rebuild from Metabase. Doing that on
+      # all 12 daily runs would burn the free Actions minutes for no gain, since
+      # it only changes once a day.
+      - name: Cache history shards
+        id: hist
+        uses: actions/cache@v4
+        with:
+          path: web/data
+          key: history-${{ github.run_id }}
+          restore-keys: history-
+
+      - name: Build history if the cache is cold or stale
+        working-directory: web
+        env:
+          APPS_SCRIPT_EXEC_URL: ${{ secrets.APPS_SCRIPT_EXEC_URL }}
+          APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
+          METABASE_CARD_ID: ${{ secrets.METABASE_CARD_ID }}
+        run: |
+          # Stale means "built for a different day". Recency weighting is
+          # relative to build date, so yesterday's shard quietly mis-weights
+          # every cab by a day.
+          BUILT=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/buids.json')).built_at.slice(0,10))}catch(e){console.log('none')}")
+          TODAY=$(TZ=Asia/Kolkata date +%F)
+          if [ "$BUILT" != "$TODAY" ]; then
+            echo "history is '$BUILT', today is '$TODAY' — rebuilding"
+            node scripts/build-history.mjs
+          else
+            echo "history already built for $TODAY"
+          fi
+
+      - name: Sweep
+        working-directory: web
+        env:
+          MDS_EMAIL: ${{ secrets.MDS_EMAIL }}
+          MDS_PASSWORD: ${{ secrets.MDS_PASSWORD }}
+          SHADOW_BUIDS: ${{ vars.SHADOW_BUIDS }}
+          SHADOW_SAMPLE: ${{ vars.SHADOW_SAMPLE || 30 }}
+        run: node scripts/shadow-sweep.mjs
+
+      - name: Commit predictions
+        run: |
+          git config user.name  "shadow-sweep"
+          git config user.email "actions@github.com"
+          git add shadow/ || true
+          if git diff --cached --quiet; then
+            echo "nothing new"
+            exit 0
+          fi
+          git commit -m "shadow: predictions $(date -u +%FT%TZ)"
+          # Another job may have committed since checkout; rebase and retry
+          # rather than fail, because a lost sweep is a hole in the sample.
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1

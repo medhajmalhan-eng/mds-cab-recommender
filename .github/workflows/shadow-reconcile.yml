@@ -1,0 +1,61 @@
+# Join yesterday's predictions against what the deployer actually did.
+#
+# Runs late enough that the previous day's waves are fully deployed. Every
+# prediction it scores was made while the trip was still unassigned — the sweep
+# only logs open trips — so nothing here can be inflated by hindsight.
+#
+# SECRETS: MDS_EMAIL, MDS_PASSWORD
+
+name: shadow reconcile
+
+on:
+  schedule:
+    # 04:05 UTC = 09:35 IST. Yesterday's night waves have long since been
+    # deployed, and the morning peak (05:00-09:00 IST) is far enough along that
+    # re-running later would add little.
+    - cron: '5 4 * * *'
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'Day to reconcile (YYYY-MM-DD). Blank = yesterday IST.'
+        required: false
+
+concurrency:
+  group: shadow-reconcile
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Reconcile
+        working-directory: web
+        env:
+          MDS_EMAIL: ${{ secrets.MDS_EMAIL }}
+          MDS_PASSWORD: ${{ secrets.MDS_PASSWORD }}
+        run: node scripts/shadow-reconcile.mjs ${{ github.event.inputs.day }}
+
+      - name: Report
+        working-directory: web
+        run: node scripts/shadow-report.mjs
+
+      - name: Commit results
+        run: |
+          git config user.name  "shadow-reconcile"
+          git config user.email "actions@github.com"
+          git add shadow/ || true
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git commit -m "shadow: reconciled $(date -u +%F)"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1
