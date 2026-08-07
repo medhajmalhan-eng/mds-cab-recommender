@@ -20,6 +20,12 @@ on:
         description: 'Day to reconcile (YYYY-MM-DD). Blank = yesterday IST.'
         required: false
 
+# The default GITHUB_TOKEN is read-only, so the commit step gets a 403. This
+# grants exactly what is needed and nothing else: the job writes shadow/ and
+# touches nothing about issues, packages, deployments or actions themselves.
+permissions:
+  contents: write
+
 concurrency:
   group: shadow-reconcile
 

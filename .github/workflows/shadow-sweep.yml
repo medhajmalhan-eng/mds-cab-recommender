@@ -24,6 +24,12 @@ on:
     - cron: '17 */2 * * *'
   workflow_dispatch:
 
+# The default GITHUB_TOKEN is read-only, so the commit step gets a 403. This
+# grants exactly what is needed and nothing else: the job writes shadow/ and
+# touches nothing about issues, packages, deployments or actions themselves.
+permissions:
+  contents: write
+
 concurrency:
   # Two sweeps appending to the same day file and racing to commit is a merge
   # conflict for no benefit. Skip rather than queue: the next slot is 2h away
