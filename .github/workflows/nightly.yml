@@ -8,10 +8,12 @@
 # the free equivalent.
 #
 # SETUP (one time, after the site exists):
+#   For EACH site (the recommender, and the Virtual Cab Finder):
 #   1. Netlify -> Site configuration -> Build & deploy -> Build hooks
 #      -> Add build hook, name it "nightly", branch main. Copy the URL.
 #   2. GitHub -> this repo -> Settings -> Secrets and variables -> Actions
-#      -> New repository secret, name NETLIFY_BUILD_HOOK, paste the URL.
+#      -> New repository secret. Name it NETLIFY_BUILD_HOOK for the recommender,
+#         VCF_BUILD_HOOK for the Virtual Cab Finder. Paste the URL as the value.
 #
 # Until step 2 is done this workflow exits cleanly with a note rather than
 # failing every night and mailing you about it.
@@ -33,13 +35,26 @@ jobs:
       - name: Trigger the Netlify build hook
         env:
           HOOK: ${{ secrets.NETLIFY_BUILD_HOOK }}
+          VCF_HOOK: ${{ secrets.VCF_BUILD_HOOK }}
         run: |
-          if [ -z "$HOOK" ]; then
-            echo "NETLIFY_BUILD_HOOK is not set — see the setup notes at the top"
-            echo "of .github/workflows/nightly.yml. Skipping."
-            exit 0
-          fi
+          fired=0
           # --fail so an HTTP error is a failed job rather than a silent no-op;
           # the whole point of this file is that a stale build gets noticed.
-          curl --fail --silent --show-error -X POST -d '{}' "$HOOK"
-          echo "build triggered"
+          if [ -n "$HOOK" ]; then
+            curl --fail --silent --show-error -X POST -d '{}' "$HOOK"
+            echo "recommender build triggered"; fired=1
+          else
+            echo "NETLIFY_BUILD_HOOK not set — recommender history will go stale"
+          fi
+          # The Virtual Cab Finder lives in another repo but has the same
+          # problem and no scheduler of its own: its 30-day window is baked at
+          # build time, so with nothing triggering it the data freezes — which is
+          # exactly the failure that made us abandon the Google Sheet.
+          # Pinging it from here beats standing up Actions in a second repo.
+          if [ -n "$VCF_HOOK" ]; then
+            curl --fail --silent --show-error -X POST -d '{}' "$VCF_HOOK"
+            echo "VCF build triggered"; fired=1
+          else
+            echo "VCF_BUILD_HOOK not set — the Virtual Cab Finder's 30-day data will go stale"
+          fi
+          [ "$fired" = 1 ] || echo "nothing configured yet; see the notes at the top of this file"
