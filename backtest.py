@@ -15,7 +15,8 @@ deployed after the trip have already been filtered out.
 Method, per trip, using ONLY data from before that day:
   candidates = cabs that worked that day at that BU+office, same vendor,
                matching capacity, no time conflict, not already used in the wave
-  score      = exact-route tier -> kernel exp(-d/3km) x3 shift x recency / n^0.5
+  score      = exact tier -> kernel exp(-d/3km) x time-of-day x recency / n^0.5
+               x (1 + 16 x duty), duty = does this cab work this hour at all
   trips are walked in cab_allocation_time order, exactly as the deployer worked
 """
 import argparse, math, os, sqlite3, sys
@@ -28,6 +29,23 @@ KM_LAT, KM_LNG = 111.0, 105.9
 EXACT_KM, KERNEL_KM, CAP_KM = 1.0, 3.0, 10.0
 SHIFT_BONUS, HALFLIFE, SPEC = 2.0, 21.0, 0.5
 BUFFER_MIN = 30
+# Time-of-day terms, added 2026-08-08 — must stay in step with recommend.py or
+# this script silently measures a model nobody is running. experiment.py is the
+# tool for TRYING changes; this one reports the shipped model.
+TOD_TAU, DUTY_W, DUTY_TAU = 30.0, 16.0, 60.0
+
+
+def mins(hhmm):
+    try:
+        h, m = str(hhmm).split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return None
+
+
+def circ(a, b):
+    d = abs(a - b) % 1440
+    return min(d, 1440 - d)
 
 
 def km(a, b, c, d):
@@ -118,18 +136,27 @@ def main():
                     rows = by_cab.get(cab)
                     if not rows:
                         continue
-                    ex_w = kern = 0.0
+                    ex_w = kern = duty = 0.0
                     n_ex = 0
+                    sh_m = mins(sh)
                     for lat, lng, hsh, hven, age in rows:
+                        r = 0.5 ** (age / HALFLIFE)
+                        hsh_m = mins(hsh)
+                        # duty is scored with NO distance filter: "does this cab
+                        # work this hour" is a fact about the cab, not the pickup
+                        if hsh_m is not None and sh_m is not None:
+                            duty += math.exp(-circ(hsh_m, sh_m) / DUTY_TAU) * r
                         d = km(tlat, tlng, lat, lng)
                         if d > CAP_KM:
                             continue
-                        r = 0.5 ** (age / HALFLIFE)
-                        sm = (hsh == sh)
-                        kern += math.exp(-d / KERNEL_KM) * (1 + SHIFT_BONUS * sm) * r
-                        if d <= EXACT_KM and sm:
+                        sim = (0.0 if (hsh_m is None or sh_m is None)
+                               else math.exp(-circ(hsh_m, sh_m) / TOD_TAU))
+                        kern += math.exp(-d / KERNEL_KM) * (1 + SHIFT_BONUS * sim) * r
+                        if d <= EXACT_KM and hsh_m is not None and hsh_m == sh_m:
                             n_ex += 1; ex_w += r
-                    scored.append((0 if n_ex else 1, -ex_w, -kern / len(rows) ** SPEC, cab))
+                    n_rows = len(rows)
+                    k = kern / n_rows ** SPEC * (1 + DUTY_W * (duty / n_rows))
+                    scored.append((0 if n_ex else 1, -ex_w, -k, cab))
                 scored.sort()
                 pool_sizes.append(len(scored))
                 order = [c[-1] for c in scored]

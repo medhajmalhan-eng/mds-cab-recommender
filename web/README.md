@@ -54,8 +54,10 @@ Python service called the same thing `UI_PASSWORD`.
 ## Before changing anything in `scorer.js`
 
 It is a port. `../recommend.py` is what was backtested — 41,203 trips, 26.6%
-top-1 / 45.5% top-3 / 55.2% top-5 against real deployer choices. That number
-only describes this file while the two produce identical rankings.
+top-1 / 45.5% top-3 / 55.2% top-5 against real deployer choices, plus the
+time-of-day terms added 2026-08-08 (+2.2 top-1 / +5.4 top-5 on 17,174 trips,
++2.9 / +5.5 held out). Those numbers only describe this file while the two
+produce identical rankings.
 
 ```bash
 python3 ../verify_fixture.py ivycomptech-IVYHyd 10 > fixture.json

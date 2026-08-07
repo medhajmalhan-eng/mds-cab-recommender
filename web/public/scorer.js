@@ -26,10 +26,27 @@
 export const KERNEL_KM = 3.0;      // exp(-d/KERNEL_KM)
 export const KERNEL_CAP_KM = 10.0; // beyond this, no credit. 3km was too tight: cost 2.7pts top-5
 export const EXACT_KM = 1.0;       // "same route" radius for the dominant tier
-export const SHIFT_BONUS = 2.0;    // multiplier is (1 + SHIFT_BONUS) on a shift match
+export const SHIFT_BONUS = 2.0;    // multiplier is (1 + SHIFT_BONUS * shift_similarity)
 export const RECENCY_HALFLIFE_D = 21.0;
 export const SPECIFICITY = 0.5;    // divide by n_cab**this. Rewards cabs that ONLY do this area
 export const FEASIBILITY_BUFFER_MIN = 30;
+
+// ── time-of-day terms (added 2026-08-08) ────────────────────────────────
+// Measured with ../../experiment.py. Held out on 6,708 trips from a period the
+// tuning never saw: top-1 20.8 -> 23.7, top-5 47.0 -> 52.6. Confirmed on 17,174
+// trips overall (+2.2 / +5.4). Neither works alone — separately they are +0.2
+// and +0.5, which is noise; together they are worth ~5pts of top-5.
+//
+// Why: shift matching used to be exact STRING equality, so a shift with little
+// history had the x3 bonus — the strongest term — permanently switched off. A
+// real 02:30 wave at Ivy had 8 historical trips at that time out of 12,498 at
+// the site: nothing scored `strong`, every card read "no exact match", and
+// ranking collapsed onto daytime area familiarity while the deployer picked
+// night regulars. Rare shifts go 41.5 -> 52.1 top-5.
+export const TOD_TAU = 30.0;       // minutes; swept 15..180, flat 30-45, worse past 90
+export const TIER_DELTA_MIN = 0;   // tier 1 still requires an EXACT match — untested otherwise
+export const DUTY_W = 16.0;        // weight on "works this hour at all", no distance filter
+export const DUTY_TAU = 60.0;      // minutes; 60 beat 120 and 240
 
 // A cab this far from the pickup cannot serve it. Vendor pools are city-wide —
 // Ivy has a Pune office, so a Hyderabad trip's pool contains MH-plated Pune cabs
@@ -76,6 +93,22 @@ const minOfDay = (sec) => {
   return d.getUTCHours() * 60 + d.getUTCMinutes();
 };
 
+/** '02:30' -> 150. null when unparseable — the extract carries the literal
+ *  string 'null' for a missing shift, and treating that as a time would match
+ *  it against everything. */
+export function shiftMins(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm ?? '').trim());
+  return m ? +m[1] * 60 + +m[2] : null;
+}
+
+/** Minutes between two times of day, the short way round the clock. 23:45 and
+ *  00:15 are 30 minutes apart, not 1410 — and night waves, which is where this
+ *  whole term earns its keep, sit right on that boundary. */
+export function circDelta(a, b) {
+  const d = Math.abs(a - b) % 1440;
+  return Math.min(d, 1440 - d);
+}
+
 /** Render a missing value as "?" rather than the language's own spelling. These
  *  strings are shown to deployers AND compared against recommend.py — "null" vs
  *  "None" would be a permanent false failure in the verification harness. */
@@ -98,7 +131,11 @@ export class History {
     this.from = bundle.from;
     this.to = bundle.to;
     const cabs = bundle.cabs || [];
-    const rows = bundle.shards?.[`${office}|${direction}`] || [];
+    // Shard rows are [cabIdx, lat, lng, shift, age]; append parsed shift minutes
+    // once here rather than re-parsing 12k strings on every trip click. Done in
+    // the constructor, not the build, so existing shards keep working.
+    const rows = (bundle.shards?.[`${office}|${direction}`] || [])
+      .map((r) => (r.length > 5 ? r : [r[0], r[1], r[2], r[3], r[4], shiftMins(r[3])]));
     this.rows = rows;
     this.byCab = new Map();
     for (const r of rows) {
@@ -235,6 +272,7 @@ export function scorePool(trip, pool, hist, {
   const wantCap = trip.capacity;
   const noCap = !wantCap;
   const tshift = hhmm(trip.shiftTime);
+  const tshiftM = shiftMins(tshift);
   const hl = RECENCY_HALFLIFE_D;
 
   const out = [], rejects = [], seen = new Set();
@@ -268,19 +306,29 @@ export function scorePool(trip, pool, hist, {
     if (!f.ok) { drop(f.why); continue; }
 
     const rows = hist.byCab.get(cab) || [];
-    let nExact = 0, exactW = 0, kern = 0, nearest = null;
+    let nExact = 0, exactW = 0, kern = 0, duty = 0, nearest = null;
     // Without a coordinate there is no route to match on, so every history term
     // stays zero and the ranking falls through to deadhead.
-    for (const [, lat, lng, shift, age] of (noAnchor ? [] : rows)) {
+    for (const [, lat, lng, shift, age, shm] of (noAnchor ? [] : rows)) {
+      const r = Math.pow(0.5, age / hl);
+      // Duty accumulates BEFORE the distance gate, on purpose: "does this cab
+      // work this hour" is a fact about the cab, not about this pickup.
+      // Filtering it by distance would collapse it back into the kernel.
+      if (shm !== null && tshiftM !== null) {
+        duty += Math.exp(-circDelta(shm, tshiftM) / DUTY_TAU) * r;
+      }
       const d = km(tlat, tlng, lat, lng);
       if (nearest === null || d < nearest) nearest = d;
       if (d > KERNEL_CAP_KM) continue;
-      const r = Math.pow(0.5, age / hl);
-      const sm = shift === tshift;
-      kern += Math.exp(-d / KERNEL_KM) * (1 + SHIFT_BONUS * (sm ? 1 : 0)) * r;
-      if (d <= EXACT_KM && sm) { nExact += 1; exactW += r; }
+      const sim = (shm === null || tshiftM === null)
+        ? 0 : Math.exp(-circDelta(shm, tshiftM) / TOD_TAU);
+      kern += Math.exp(-d / KERNEL_KM) * (1 + SHIFT_BONUS * sim) * r;
+      if (d <= EXACT_KM && shm !== null && tshiftM !== null
+          && circDelta(shm, tshiftM) <= TIER_DELTA_MIN) { nExact += 1; exactW += r; }
     }
-    kern /= Math.pow(Math.max(rows.length, 1), SPECIFICITY);
+    const nRows = Math.max(rows.length, 1);
+    kern /= Math.pow(nRows, SPECIFICITY);
+    kern *= (1 + DUTY_W * (duty / nRows));      // specificity first, then duty
 
     const prof = hist.faults.get(cab);
     out.push({
@@ -292,7 +340,11 @@ export function scorePool(trip, pool, hist, {
       kernel: kern,
       n_exact: nExact,
       n_history: rows.length,
-      nearest_km: nearest === null ? null : Math.round(nearest * 100) / 100,
+      // Rounded ONCE, at the precision the evidence string displays. Rounding to
+      // 2 dp and then formatting at 1 dp manufactured exact .x5 values, which
+      // Python (half-to-even) and JS (half-up) resolve differently — a permanent
+      // mismatch in verify.mjs on roughly one row in ten.
+      nearest_km: nearest === null ? null : Math.round(nearest * 10) / 10,
       fault_rate: prof ? prof.fault : 0,
       // "full" = chain checked with real geocodes; "time-only" = clock only,
       // because that commitment sits in a BU we can't see trips for

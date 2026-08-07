@@ -2,11 +2,18 @@
 """
 Scoring engine: local 30-day history + live MDS candidate pool -> ranked cabs.
 
-The spec below was frozen after backtesting 41,203 trips across 6 Hyderabad
-BU-offices (rolling 30d, no leakage). Measured: 26.6% top-1 / 45.5% top-3 /
-55.2% top-5 against what the deployer actually did.
+Backtested on 41,203 trips across 6 Hyderabad BU-offices (rolling 30d, no
+leakage): 26.6% top-1 / 45.5% top-3 / 55.2% top-5 against what the deployer
+actually did.
 
-  hard filters -> exact-route tier -> fallback kernel -> reliability tiebreak
+  hard filters -> exact-route tier -> fallback kernel -> time-of-day -> tiebreak
+
+The time-of-day terms were added 2026-08-08 and are worth, re-measured on the
+same footing (experiment.py, baseline vs tuned on identical trips):
+    17,174 trips  +2.2 top-1  +4.6 top-3  +5.4 top-5
+     6,708 trips  +2.9        +5.5        +5.5      <- held out, tuning never
+                                                       saw this period
+Rare shifts, which is what they were built for: 41.5 -> 52.1 top-5.
 
 Things that were tested and made it WORSE, so don't re-add them:
   - employee<->cab affinity (<1pt)
@@ -14,6 +21,12 @@ Things that were tested and made it WORSE, so don't re-add them:
   - greedy global assignment (20.4% vs 24.2% — cabs legitimately do 3-5 trips/day)
   - reliability as a ranking term rather than a tiebreak (49.3% -> 49.1%)
   - the garage anchor applied globally (helps LOGIN-first only)
+  - opportunity-cost re-ranking, i.e. demoting a cab that another trip in the
+    same wave needs more (-2.0 top-1, and no gain in wave-level set overlap)
+  - wave-level assignment INSIDE the ranking: it trades -3.8 top-1 for +11.3
+    wave-set. That is a real effect and might justify a separate "plan the whole
+    wave" view, but the deployer clicks one trip and reads five cabs, so it must
+    not replace the per-trip list.
 """
 import math, os, sqlite3, time
 from datetime import datetime
@@ -25,9 +38,30 @@ DB = os.path.join(ROOT, "data", "history.db")
 KERNEL_KM      = 3.0    # exp(-d/KERNEL_KM)
 KERNEL_CAP_KM  = 10.0   # beyond this, no credit. 3km was too tight: cost 2.7pts top-5
 EXACT_KM       = 1.0    # "same route" radius for the dominant tier
-SHIFT_BONUS    = 2.0    # multiplier is (1 + SHIFT_BONUS) on a shift match
+SHIFT_BONUS    = 2.0    # multiplier is (1 + SHIFT_BONUS * shift_similarity)
 RECENCY_HALFLIFE_D = 21.0
 SPECIFICITY    = 0.5    # divide by n_cab**this. Rewards cabs that ONLY do this area
+
+# ── time-of-day terms (added 2026-08-08) ────────────────────────────────
+# Both were measured with experiment.py. Held out on 6,708 trips from a period
+# the tuning never saw: top-1 20.8 -> 23.7, top-5 47.0 -> 52.6. Confirmed on
+# 17,174 trips overall (+2.2 / +5.4). Neither works alone — separately they are
+# +0.2 and +0.5, which is noise; together they are worth ~5pts of top-5.
+#
+# Why they were needed: shift matching used to be exact STRING equality, so a
+# shift with little history had the x3 bonus — the strongest term in the model —
+# permanently switched off. A real 02:30 wave at Ivy had 8 historical trips at
+# that time out of 12,498 at the site: nothing scored `strong`, every card read
+# "no exact match", and ranking collapsed onto daytime area familiarity while
+# the deployer picked night regulars. Rare shifts go 41.5 -> 52.1 top-5.
+TOD_TAU        = 30.0   # minutes. exp(-|dt|/TOD_TAU) replaces the 0/1 shift match.
+                        # Swept 15..180; 30-45 flat, degrades past 90.
+TIER_DELTA_MIN = 0      # tier 1 still requires an EXACT time match. Loosening it
+                        # was not tested — do not change without re-running.
+DUTY_W         = 16.0   # weight on "does this cab work this hour at all", scored
+                        # with NO distance restriction. Swept 1..32: top-1 plateaus
+                        # near 16, top-5 still climbing at 32. 16 is the knee.
+DUTY_TAU       = 60.0   # minutes, for the duty term. 60 beat 120 and 240.
 FEASIBILITY_BUFFER_MIN = 30
 MAX_DEADHEAD_KM = 60    # a cab this far from the pickup cannot serve it. Vendor
                         # pools are city-wide — Ivy has a Pune office, so a
@@ -49,6 +83,25 @@ def _km(alat, alng, blat, blng):
     return math.hypot((alat - blat) * KM_PER_DEG_LAT, (alng - blng) * KM_PER_DEG_LNG)
 
 
+def _mins(hhmm):
+    """'02:30' -> 150. None when unparseable — the extract carries the literal
+    string 'null' for a missing shift, and treating that as a time would match
+    it against everything."""
+    try:
+        h, m = str(hhmm).split(":")
+        return int(h) * 60 + int(m)
+    except Exception:
+        return None
+
+
+def _circ(a, b):
+    """Minutes between two times of day, the short way round the clock. 23:45 and
+    00:15 are 30 minutes apart, not 1410 — and night waves, which is where this
+    whole term earns its keep, sit right on that boundary."""
+    d = abs(a - b) % 1440
+    return min(d, 1440 - d)
+
+
 class History:
     """30-day history for one (buid, office, direction), held in memory."""
 
@@ -66,7 +119,9 @@ class History:
             if lat is None or not cab:
                 continue
             age = (today - datetime.strptime(day, "%Y-%m-%d").date()).days
-            rec = (lat, lng, shift, ven, cab, age, fault or 0)
+            # shift minutes precomputed: the scorer needs it for every row on
+            # every trip, and re-parsing 12k strings per click is wasted work
+            rec = (lat, lng, shift, ven, cab, age, fault or 0, _mins(shift))
             self.rows.append(rec)
             self.by_cab.setdefault(cab, []).append(rec)
         self.n_by_cab = {c: len(v) for c, v in self.by_cab.items()}
@@ -180,6 +235,19 @@ def _parse_geo(s):
         return None, None
 
 
+def _r(x, dp):
+    """Round half-UP, matching JavaScript.
+
+    Python rounds half-to-EVEN everywhere — both round() and "%.1f" — while JS's
+    Math.round and toFixed round half-up. round(2.25, 1) is 2.2 in Python and
+    2.3 in JS. That looks like an edge case and is not: nearest_km is snapped to
+    2 dp and then displayed at 1 dp, which manufactures exact .x5 values roughly
+    one time in ten. Both ports must agree on every digit a deployer can see,
+    and verify.mjs compares these strings."""
+    m = 10 ** dp
+    return math.floor(x * m + 0.5) / m
+
+
 def _n(x):
     """Render a missing value as "?" rather than the language's own spelling.
     These strings are shown to deployers AND compared between this module and
@@ -212,6 +280,7 @@ def score_pool(trip, pool, hist, wave_assigned=(), cross_vendor=False, topn=5,
     want_cap = trip.get("plannedCabCapacity")
     no_cap = not want_cap
     tshift = _hhmm(trip["shiftTime"])
+    tshift_m = _mins(tshift)
     hl = RECENCY_HALFLIFE_D
 
     out, rejects = [], []
@@ -251,25 +320,33 @@ def score_pool(trip, pool, hist, wave_assigned=(), cross_vendor=False, topn=5,
             drop(why); continue
 
         rows = hist.by_cab.get(cab, [])
-        n_exact = exact_w = kern = 0.0
+        n_exact = exact_w = kern = duty = 0.0
         nearest = None
         # Without a coordinate there is no route to match on, so every history
         # term stays zero and the ranking falls through to deadhead. Saying that
         # plainly beats inventing a similarity score from nothing.
-        for lat, lng, shift, ven, _c, age, fault in ([] if no_anchor else rows):
+        for lat, lng, shift, ven, _c, age, fault, shm in ([] if no_anchor else rows):
+            r = 0.5 ** (age / hl)
+            # Duty accumulates BEFORE the distance gate, on purpose: "does this
+            # cab work this hour" is a fact about the cab, not about this pickup.
+            # Filtering it by distance would collapse it back into the kernel.
+            if shm is not None and tshift_m is not None:
+                duty += math.exp(-_circ(shm, tshift_m) / DUTY_TAU) * r
             d = _km(tlat, tlng, lat, lng)
             if nearest is None or d < nearest:
                 nearest = d
             if d > KERNEL_CAP_KM:
                 continue
-            r = 0.5 ** (age / hl)
-            sm = (shift == tshift)
-            kern += math.exp(-d / KERNEL_KM) * (1 + SHIFT_BONUS * sm) * r
-            if d <= EXACT_KM and sm:
+            sim = (0.0 if (shm is None or tshift_m is None)
+                   else math.exp(-_circ(shm, tshift_m) / TOD_TAU))
+            kern += math.exp(-d / KERNEL_KM) * (1 + SHIFT_BONUS * sim) * r
+            if (d <= EXACT_KM and shm is not None and tshift_m is not None
+                    and _circ(shm, tshift_m) <= TIER_DELTA_MIN):
                 n_exact += 1
                 exact_w += r
         n = max(len(rows), 1)
         kern /= n ** SPECIFICITY
+        kern *= (1 + DUTY_W * (duty / n))      # specificity first, then duty
 
         prof = hist.profiles.get(cab, {})
         el = c.get("emptyLegInMetres")
@@ -283,13 +360,13 @@ def score_pool(trip, pool, hist, wave_assigned=(), cross_vendor=False, topn=5,
             "kernel": kern,
             "n_exact": int(n_exact),
             "n_history": len(rows),
-            "nearest_km": round(nearest, 2) if nearest is not None else None,
+            "nearest_km": _r(nearest, 1) if nearest is not None else None,
             "fault_rate": round(prof.get("fault", 0.0), 4),
             # "full" = chain checked with real geocodes; "time-only" = clock only,
             # because that commitment sits in a BU we can't see trips for
             "feasibility": depth,
             # suppressed for cross-vendor: the number belongs to a different trip
-            "deadhead_km": (round(el / 1000, 1)
+            "deadhead_km": (_r(el / 1000, 1)
                             if (el is not None and el >= 0 and not cross_vendor) else None),
             "no_anchor": no_anchor,
             "no_capacity": no_cap,

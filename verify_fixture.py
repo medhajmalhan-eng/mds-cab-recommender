@@ -94,7 +94,10 @@ def bundle_for(hist, office, direction):
     any difference is the porting, not the extract."""
     cabs, idx = [], {}
     rows = []
-    for lat, lng, shift, _ven, cab, age, _f in hist.rows:
+    # 8-tuple since the time-of-day work: (lat, lng, shift, vendor, cab, age,
+    # fault, shift_minutes). The JS side re-derives minutes from the shift
+    # string in its History constructor, so the shard shape stays 5 columns.
+    for lat, lng, shift, _ven, cab, age, _f, _shm in hist.rows:
         i = idx.get(cab)
         if i is None:
             i = len(cabs); idx[cab] = i; cabs.append(cab)
