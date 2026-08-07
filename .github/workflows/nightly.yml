@@ -1,0 +1,45 @@
+# Nightly rebuild of the recommender's history.
+#
+# The 30-day extract is baked at build time, so without this the screen freezes
+# at whatever day it was last deployed — and does so silently: the page still
+# loads, the recommendations still render, they are just increasingly stale.
+#
+# Netlify's own scheduled builds are a paid feature; a build hook plus this is
+# the free equivalent.
+#
+# SETUP (one time, after the site exists):
+#   1. Netlify -> Site configuration -> Build & deploy -> Build hooks
+#      -> Add build hook, name it "nightly", branch main. Copy the URL.
+#   2. GitHub -> this repo -> Settings -> Secrets and variables -> Actions
+#      -> New repository secret, name NETLIFY_BUILD_HOOK, paste the URL.
+#
+# Until step 2 is done this workflow exits cleanly with a note rather than
+# failing every night and mailing you about it.
+
+name: nightly rebuild
+
+on:
+  schedule:
+    # 17:40 UTC = 23:10 IST. GitHub cron is always UTC. Late enough that the
+    # day's trips have settled in Metabase, early enough that a failure is
+    # visible before the morning wave.
+    - cron: '40 17 * * *'
+  workflow_dispatch:        # lets you trigger it by hand from the Actions tab
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the Netlify build hook
+        env:
+          HOOK: ${{ secrets.NETLIFY_BUILD_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "NETLIFY_BUILD_HOOK is not set — see the setup notes at the top"
+            echo "of .github/workflows/nightly.yml. Skipping."
+            exit 0
+          fi
+          # --fail so an HTTP error is a failed job rather than a silent no-op;
+          # the whole point of this file is that a stale build gets noticed.
+          curl --fail --silent --show-error -X POST -d '{}' "$HOOK"
+          echo "build triggered"
