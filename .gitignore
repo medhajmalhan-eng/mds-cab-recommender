@@ -1,0 +1,14 @@
+.env
+*.har
+*.csv
+*.pkl
+__pycache__/
+.token_cache.json
+.DS_Store
+
+# 86 MB SQLite + logs. The web build regenerates its own data from Metabase,
+# and the Python side rebuilds this with `sync.py --backfill`.
+data/
+web/public/data/
+node_modules/
+.netlify/

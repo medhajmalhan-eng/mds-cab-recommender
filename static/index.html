@@ -1,0 +1,336 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Cab Recommender</title>
+<style>
+:root{--bg:#0f1115;--panel:#171a21;--line:#262b35;--txt:#e6e9ef;--dim:#8b93a3;
+      --accent:#3b82f6;--good:#22c55e;--warn:#f59e0b;--bad:#ef4444}
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+     background:var(--bg);color:var(--txt)}
+header{display:flex;gap:10px;align-items:center;padding:10px 14px;
+       border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+h1{font-size:14px;margin:0 12px 0 0;font-weight:600}
+select,input,button{background:#1e222b;color:var(--txt);border:1px solid var(--line);
+       border-radius:6px;padding:6px 9px;font:inherit}
+button{cursor:pointer}
+button:hover{border-color:var(--accent)}
+.pill{padding:3px 9px;border-radius:20px;font-size:11px;background:#1e222b;color:var(--dim)}
+#shortfall{padding:8px 14px;background:#3b1d1d;border-bottom:1px solid #5b2b2b;
+       color:#fca5a5;font-size:12px;display:none}
+main{display:grid;grid-template-columns:1fr 460px;height:calc(100vh - 47px)}
+#left{overflow:auto;border-right:1px solid var(--line)}
+#right{overflow:auto;background:var(--panel)}
+table{width:100%;border-collapse:collapse}
+th{position:sticky;top:0;background:#1a1e26;text-align:left;padding:7px 10px;
+   font-size:11px;color:var(--dim);font-weight:600;border-bottom:1px solid var(--line);
+   cursor:pointer;user-select:none}
+td{padding:7px 10px;border-bottom:1px solid #1d222b}
+tr.trip{cursor:pointer}
+tr.trip:hover{background:#1b1f28}
+tr.trip.sel{background:#1e2a44}
+tr.done td{opacity:.4}
+.dir{font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600}
+.IN{background:#0f3320;color:#4ade80}.OUT{background:#3a1f14;color:#fb923c}
+.rp{padding:14px}
+.rhead{border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:12px}
+.toggle{display:flex;gap:0;margin:10px 0}
+.toggle button{border-radius:0;flex:1}
+.toggle button:first-child{border-radius:6px 0 0 6px}
+.toggle button:last-child{border-radius:0 6px 6px 0;border-left:none}
+.toggle button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.card{border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:9px;background:#1b1f28}
+.card.strong{border-left:3px solid var(--good)}
+.card.medium{border-left:3px solid var(--warn)}
+.card.weak{border-left:3px solid var(--dim)}
+.reg{font-weight:600;font-size:14px;letter-spacing:.3px}
+.ev{color:var(--dim);font-size:11.5px;margin-top:5px}
+.meta{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
+.tag{font-size:10px;padding:2px 6px;border-radius:4px;background:#242a35;color:var(--dim)}
+.tag.t{background:#14321f;color:#4ade80}
+.tag.warn{background:#3a2a10;color:#fbbf24}
+.dim{color:var(--dim)}
+.empty{color:var(--dim);text-align:center;padding:40px 20px}
+.spin{color:var(--accent)}
+/* ── MDS-style dropdown panels: search bar + (check)list ── */
+.dd{position:relative}
+.dd-btn{min-width:170px;text-align:left;display:flex;justify-content:space-between;gap:8px}
+.dd-btn:after{content:'▾';color:var(--dim)}
+.dd-panel{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:50;
+  width:320px;max-height:420px;background:#1a1e26;border:1px solid var(--line);
+  border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.55);overflow:hidden}
+.dd.open .dd-panel{display:flex;flex-direction:column}
+.dd-search{margin:8px;padding:7px 10px;border-radius:7px;width:calc(100% - 16px)}
+.dd-tools{display:flex;justify-content:space-between;align-items:center;
+  padding:2px 12px 6px;font-size:11px;color:var(--dim)}
+.dd-tools a{color:var(--bad);cursor:pointer}
+.dd-list{overflow:auto;padding:4px 6px 8px}
+.dd-item{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;cursor:pointer}
+.dd-item:hover{background:#222836}
+.dd-item.on{background:#1e2a44}
+.dd-item input{accent-color:var(--accent);width:14px;height:14px;pointer-events:none}
+.dd-item .sub{margin-left:auto;font-size:11px;color:var(--dim);white-space:nowrap}
+.xbtn{background:none;border:none;color:var(--dim);font-size:16px;padding:2px 8px;line-height:1}
+.xbtn:hover{color:var(--txt);border:none}
+</style>
+
+<header>
+  <h1>Cab Recommender</h1>
+  <div class="dd" id="ddBu">
+    <button class="dd-btn" id="buBtn">loading…</button>
+    <div class="dd-panel">
+      <input class="dd-search" id="buQ" placeholder="Search business unit…">
+      <div class="dd-list" id="buList"></div>
+    </div>
+  </div>
+  <input id="date" type="date">
+  <div class="dd" id="ddSh">
+    <button class="dd-btn" id="shBtn">all shifts</button>
+    <div class="dd-panel">
+      <input class="dd-search" id="shQ" placeholder="Search shift / office…">
+      <div class="dd-tools"><span id="shCount">0 selected</span><a id="shClear">Clear all</a></div>
+      <div class="dd-list" id="shList"></div>
+    </div>
+  </div>
+  <select id="status">
+    <option value="un">unassigned only</option>
+    <option value="all">all trips</option>
+  </select>
+  <input id="q" placeholder="trip id / landmark / cab" style="width:160px">
+  <button id="refresh">Refresh</button>
+  <span class="pill" id="stat">—</span>
+</header>
+<div id="shortfall"></div>
+<main>
+  <div id="left"><div class="empty">Loading…</div></div>
+  <div id="right"><div class="empty">Select a trip to see recommendations</div></div>
+</main>
+
+<script>
+const API='';                       // same origin
+let WAVE=null, SEL=null, LAYER=null, SORT={k:'shift',asc:true};
+let BUID=null, BUS=[], SHIFT_SEL=new Set();
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+const RIGHT_EMPTY='<div class="empty">Select a trip to see recommendations</div>';
+
+$('#date').value=new Date().toISOString().slice(0,10);
+
+/* ── dropdown plumbing: open/close, outside click ── */
+function wireDd(id){
+  const dd=$(id);
+  dd.querySelector('.dd-btn').onclick=e=>{
+    e.stopPropagation();
+    const was=dd.classList.contains('open');
+    document.querySelectorAll('.dd.open').forEach(x=>x.classList.remove('open'));
+    if(!was){dd.classList.add('open');const s=dd.querySelector('.dd-search');s.value='';s.focus();
+             s.dispatchEvent(new Event('input'));}
+  };
+  dd.querySelector('.dd-panel').onclick=e=>e.stopPropagation();
+}
+document.addEventListener('click',()=>document.querySelectorAll('.dd.open')
+  .forEach(x=>x.classList.remove('open')));
+
+/* ── BU picker: search + single-select list (one wave view = one BU) ── */
+async function loadBuids(){
+  BUS=await (await fetch(`${API}/buids`)).json();
+  BUID=BUS.some(b=>b.buid==='ivycomptech-IVYHyd')?'ivycomptech-IVYHyd':(BUS[0]||{}).buid;
+  renderBuList('');
+  $('#buBtn').textContent=BUID||'—';
+}
+function renderBuList(q){
+  const f=BUS.filter(b=>b.buid.toLowerCase().includes(q));
+  $('#buList').innerHTML=f.map(b=>`
+    <div class="dd-item${b.buid===BUID?' on':''}" data-b="${b.buid}">
+      <input type="radio" ${b.buid===BUID?'checked':''}>
+      <span>${esc(b.buid)}</span>
+      <span class="sub">${b.offices} office${b.offices>1?'s':''}</span>
+    </div>`).join('')||'<div class="empty" style="padding:14px">no match</div>';
+  document.querySelectorAll('#buList .dd-item').forEach(el=>el.onclick=()=>{
+    BUID=el.dataset.b; $('#buBtn').textContent=BUID;
+    SHIFT_SEL.clear(); SEL=null; $('#right').innerHTML=RIGHT_EMPTY;
+    document.querySelectorAll('.dd.open').forEach(x=>x.classList.remove('open'));
+    loadWave(true);
+  });
+}
+$('#buQ').oninput=e=>renderBuList(e.target.value.toLowerCase());
+
+/* ── shift picker: search + CHECKBOX multi-select, like MDS ── */
+function renderShiftList(q){
+  const sh=(WAVE&&WAVE.shifts)||[];
+  const f=sh.filter(s=>(`${s.direction} ${s.shift} ${s.office}`).toLowerCase().includes(q));
+  $('#shList').innerHTML=f.map(s=>{
+    const k=`${s.direction}|${s.shift}|${s.office}`;
+    return `<div class="dd-item${SHIFT_SEL.has(k)?' on':''}" data-k="${k}">
+      <input type="checkbox" ${SHIFT_SEL.has(k)?'checked':''}>
+      <span class="dir ${s.direction}">${s.direction}</span><b>${s.shift}</b>
+      <span class="dim" style="font-size:11px">${esc(s.office)}</span>
+      <span class="sub">${s.open}/${s.total} open</span>
+    </div>`;}).join('')||'<div class="empty" style="padding:14px">no match</div>';
+  document.querySelectorAll('#shList .dd-item').forEach(el=>el.onclick=()=>{
+    const k=el.dataset.k;
+    SHIFT_SEL.has(k)?SHIFT_SEL.delete(k):SHIFT_SEL.add(k);
+    shiftBtn(); renderShiftList($('#shQ').value.toLowerCase()); renderTrips();
+  });
+  $('#shCount').textContent=`${SHIFT_SEL.size} selected`;
+}
+function shiftBtn(){
+  $('#shBtn').textContent=SHIFT_SEL.size?`${SHIFT_SEL.size} shift${SHIFT_SEL.size>1?'s':''} selected`:'all shifts';
+}
+$('#shQ').oninput=e=>renderShiftList(e.target.value.toLowerCase());
+$('#shClear').onclick=()=>{SHIFT_SEL.clear();shiftBtn();renderShiftList('');renderTrips();};
+
+async function loadWave(force){
+  if(!BUID) return;
+  $('#stat').textContent='loading…'; $('#stat').className='pill spin';
+  try{
+    const u=`${API}/wave?buid=${BUID}&date=${$('#date').value}`+(force?'&force=1':'');
+    WAVE=await (await fetch(u)).json();
+    // drop selections for waves that no longer exist (date/BU change)
+    const valid=new Set((WAVE.shifts||[]).map(s=>`${s.direction}|${s.shift}|${s.office}`));
+    [...SHIFT_SEL].forEach(k=>{if(!valid.has(k))SHIFT_SEL.delete(k)});
+    shiftBtn(); renderShiftList($('#shQ').value.toLowerCase());
+    $('#stat').textContent=`${WAVE.trips} trips · ${WAVE.unassigned} unassigned · ${WAVE.cabs_deployed} cabs out`;
+    $('#stat').className='pill';
+    renderBanner();
+    renderTrips();
+    // the deployer assigns in the MDS tab — if the trip they're looking at HERE
+    // just got a cab there, say so instead of leaving a stale recommendation up
+    if(SEL){
+      const t=(WAVE.all_trips||[]).find(x=>x.tripId===SEL);
+      if(t&&t.assigned&&!$('#staleNote')){
+        $('#right').insertAdjacentHTML('afterbegin',
+          `<div id="staleNote" style="margin:10px 14px;padding:8px 10px;border-radius:6px;
+             background:#3a2a10;color:#fbbf24;font-size:12px">
+             ⚠ Trip ${esc(SEL)} was just assigned to <b>${esc(t.cab)}</b> in MDS —
+             these recommendations are stale.</div>`);
+      }
+    }
+  }catch(e){ $('#stat').textContent='error'; $('#left').innerHTML=`<div class="empty">${esc(e)}</div>`; }
+}
+
+function renderBanner(){
+  const b=$('#shortfall');
+  if(WAVE.auth_error){
+    b.style.display='block';
+    b.innerHTML=`<b>⚠ ${esc(WAVE.auth_error)}</b>`;
+  } else { b.style.display='none'; }
+}
+
+function rows(){
+  let r=WAVE?(WAVE.all_trips||[]):[];
+  if($('#status').value==='un') r=r.filter(t=>!t.assigned);
+  const q=$('#q').value.toLowerCase();
+  if(SHIFT_SEL.size) r=r.filter(t=>SHIFT_SEL.has(`${t.direction}|${t.shift}|${t.office}`));
+  if(q) r=r.filter(t=>(t.tripId+' '+(t.landmark||'')+' '+(t.vendor||'')+' '+(t.cab||''))
+                       .toLowerCase().includes(q));
+  const k=SORT.k, s=SORT.asc?1:-1;
+  return [...r].sort((a,b)=>String(a[k]??'').localeCompare(String(b[k]??''),undefined,{numeric:true})*s);
+}
+
+function renderTrips(){
+  const r=rows();
+  const st=$('#left').scrollTop;          // the 30s poll re-renders; keep place
+  if(!r.length){ $('#left').innerHTML='<div class="empty">No trips match</div>'; return; }
+  const today=new Date().toISOString().slice(0,10);
+  const nowHM=new Date().toTimeString().slice(0,5);
+  const cutPassed=t=>!t.assigned&&$('#date').value===today&&t.cut_off<nowHM;
+  const cols=[['tripId','TRIP ID'],['direction','DIR'],['shift','SHIFT'],['cut_off','CUT OFF'],
+              ['office','OFFICE'],['landmark','LANDMARK'],['vendor','VENDOR'],
+              ['capacity','CAP'],['cab','CAB']];
+  $('#left').innerHTML=`<table><thead><tr>${
+    cols.map(([k,l])=>`<th data-k="${k}">${l}${SORT.k===k?(SORT.asc?' ▲':' ▼'):''}</th>`).join('')
+  }</tr></thead><tbody>${r.map(t=>`
+    <tr class="trip${SEL===t.tripId?' sel':''}${t.assigned?' done':''}" data-id="${t.tripId}">
+      <td>${t.tripId}</td>
+      <td><span class="dir ${t.direction}">${t.direction}</span></td>
+      <td>${t.shift}</td>
+      <td class="dim"${cutPassed(t)?' style="color:#ef4444;font-weight:600"':''}>${t.cut_off}</td>
+      <td class="dim">${esc(t.office)}</td>
+      <td>${esc(t.landmark)||'<span class="dim">—</span>'}</td>
+      <td class="dim">${t.has_vendor?esc(t.vendor):'<span style="color:#fbbf24">not assigned</span>'}</td>
+      <td>${t.capacity}</td>
+      <td class="dim">${t.cab?esc(t.cab):''}</td>
+    </tr>`).join('')}</tbody></table>`;
+  document.querySelectorAll('th').forEach(th=>th.onclick=()=>{
+    const k=th.dataset.k; SORT = SORT.k===k?{k,asc:!SORT.asc}:{k,asc:true}; renderTrips();});
+  document.querySelectorAll('tr.trip').forEach(tr=>tr.onclick=()=>select(tr.dataset.id));
+  $('#left').scrollTop=st;
+}
+
+// LAYER=null means "let the server decide" — it picks Layer 2 when the trip has
+// no vendor, since there is no same-vendor pool to stay inside. Clicking either
+// toggle pins the choice for that trip.
+async function select(id, layer){
+  if(SEL!==id) LAYER=null;            // new trip -> back to auto
+  if(layer!==undefined) LAYER=layer;
+  SEL=id; renderTrips();
+  $('#right').innerHTML='<div class="empty spin">Scoring…</div>';
+  try{
+    // date matters: at midnight the deployer is working TOMORROW's waves
+    const q=`${API}/recommend?buid=${BUID}&tripId=${id}`+
+            `&date=${$('#date').value}`+(LAYER?`&layer=${LAYER}`:'');
+    renderRecos(await (await fetch(q)).json());
+  }catch(e){ $('#right').innerHTML=`<div class="empty">${esc(e)}</div>`; }
+}
+
+function closeRecos(){
+  SEL=null; LAYER=null;
+  $('#right').innerHTML=RIGHT_EMPTY;
+  renderTrips();
+}
+
+function renderRecos(d){
+  if(d.error){ $('#right').innerHTML=`<div class="empty">${esc(d.error)}</div>`; return; }
+  const t=d.trip;
+  $('#right').innerHTML=`<div class="rp">
+    <div class="rhead">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:15px;font-weight:600">Trip ${t.id}</div>
+        <button class="xbtn" id="closeR" title="close">✕</button>
+      </div>
+      <div class="dim" style="margin-top:4px">
+        <span class="dir ${t.direction}">${t.direction}</span> ${t.shift} ·
+        ${esc(t.landmark)} · ${t.capacity}S · cut-off ${t.cut_off}</div>
+      <div class="dim" style="margin-top:3px">vendor ${
+        d.vendor_assigned?esc(t.vendor):'<b style="color:#fbbf24">not assigned</b>'}</div>
+      <div class="toggle">
+        <button id="l1" class="${d.layer===1?'on':''}" ${d.vendor_assigned?'':'disabled'}>Same vendor</button>
+        <button id="l2" class="${d.layer===2?'on':''}">Any vendor</button>
+      </div>
+      ${d.layer_auto&&d.layer===2?
+        '<div class="dim" style="font-size:11px;margin-bottom:6px">no vendor on this trip — showing all vendors</div>':''}
+      <div class="dim" style="font-size:11px">
+        ${d.pool_size} cabs → ${d.eligible} feasible ·
+        ${d.excluded_already_deployed} already deployed this wave ·
+        ${d.history_trips.toLocaleString()} historic trips</div>
+    </div>
+    ${d.recommendations.length? d.recommendations.map((r,i)=>`
+      <div class="card ${r.confidence}">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <span class="reg">${i+1}. ${esc(r.cab)}</span>
+          <span class="dim" style="font-size:11px">${esc(r.subvendor||'')}</span></div>
+        <div class="ev">${esc(r.evidence)}</div>
+        <div class="meta">
+          <span class="tag ${r.confidence==='strong'?'t':''}">${r.confidence}</span>
+          ${r.n_exact?`<span class="tag t">${r.n_exact}× exact route</span>`:''}
+          ${r.deadhead_km!=null?`<span class="tag">${r.deadhead_km} km away</span>`:''}
+          <span class="tag${r.feasibility==='time-only'?' warn':''}">${r.feasibility} check</span>
+          ${r.fault_rate>=0.10?`<span class="tag warn">fault ${(r.fault_rate*100).toFixed(0)}%</span>`:''}
+        </div></div>`).join('')
+      : '<div class="empty">No feasible cab found</div>'}
+    <div class="dim" style="font-size:10.5px;margin-top:10px">
+      wave state as of ${esc(d.wave_fetched_at)}</div>
+  </div>`;
+  $('#closeR').onclick=closeRecos;
+  $('#l1').onclick=()=>select(SEL,1);
+  $('#l2').onclick=()=>select(SEL,2);
+}
+
+wireDd('#ddBu'); wireDd('#ddSh');
+$('#refresh').onclick=()=>loadWave(true);
+$('#date').onchange=()=>{SHIFT_SEL.clear();shiftBtn();SEL=null;$('#right').innerHTML=RIGHT_EMPTY;loadWave(true);};
+$('#status').onchange=renderTrips;
+$('#q').oninput=renderTrips;
+setInterval(()=>loadWave(false),30000);   // keep assignment state fresh
+loadBuids().then(()=>loadWave(false));
+</script>

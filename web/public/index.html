@@ -1,0 +1,534 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cab Recommender</title>
+<style>
+:root{--bg:#0f1115;--panel:#171a21;--line:#262b35;--txt:#e6e9ef;--dim:#8b93a3;
+      --accent:#3b82f6;--good:#22c55e;--warn:#f59e0b;--bad:#ef4444}
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+     background:var(--bg);color:var(--txt)}
+header{display:flex;gap:10px;align-items:center;padding:10px 14px;
+       border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+h1{font-size:14px;margin:0 12px 0 0;font-weight:600}
+select,input,button{background:#1e222b;color:var(--txt);border:1px solid var(--line);
+       border-radius:6px;padding:6px 9px;font:inherit}
+button{cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:disabled{opacity:.45;cursor:default}
+.pill{padding:3px 9px;border-radius:20px;font-size:11px;background:#1e222b;color:var(--dim)}
+#banner{padding:8px 14px;background:#3b1d1d;border-bottom:1px solid #5b2b2b;
+       color:#fca5a5;font-size:12px;display:none}
+main{display:grid;grid-template-columns:1fr 460px;height:calc(100vh - 47px)}
+#left{overflow:auto;border-right:1px solid var(--line)}
+#right{overflow:auto;background:var(--panel)}
+table{width:100%;border-collapse:collapse}
+th{position:sticky;top:0;background:#1a1e26;text-align:left;padding:7px 10px;
+   font-size:11px;color:var(--dim);font-weight:600;border-bottom:1px solid var(--line);
+   cursor:pointer;user-select:none}
+td{padding:7px 10px;border-bottom:1px solid #1d222b}
+tr.trip{cursor:pointer}
+tr.trip:hover{background:#1b1f28}
+tr.trip.sel{background:#1e2a44}
+tr.done td{opacity:.4}
+.dir{font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600}
+.IN{background:#0f3320;color:#4ade80}.OUT{background:#3a1f14;color:#fb923c}
+.rp{padding:14px}
+.rhead{border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:12px}
+.toggle{display:flex;gap:0;margin:10px 0}
+.toggle button{border-radius:0;flex:1}
+.toggle button:first-child{border-radius:6px 0 0 6px}
+.toggle button:last-child{border-radius:0 6px 6px 0;border-left:none}
+.toggle button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.card{border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:9px;background:#1b1f28}
+.card.strong{border-left:3px solid var(--good)}
+.card.medium{border-left:3px solid var(--warn)}
+.card.weak{border-left:3px solid var(--dim)}
+.card.actual{border:1px solid #3b5b8f;background:#161d2b}
+.reg{font-weight:600;font-size:14px;letter-spacing:.3px}
+.ev{color:var(--dim);font-size:11.5px;margin-top:5px}
+.meta{display:flex;gap:6px;margin-top:7px;flex-wrap:wrap}
+.tag{font-size:10px;padding:2px 6px;border-radius:4px;background:#242a35;color:var(--dim)}
+.tag.t{background:#14321f;color:#4ade80}
+.tag.warn{background:#3a2a10;color:#fbbf24}
+.dim{color:var(--dim)}
+.empty{color:var(--dim);text-align:center;padding:40px 20px}
+.spin{color:var(--accent)}
+.dd{position:relative}
+.dd-btn{min-width:170px;text-align:left;display:flex;justify-content:space-between;gap:8px}
+.dd-btn:after{content:'▾';color:var(--dim)}
+.dd-panel{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:50;
+  width:320px;max-height:420px;background:#1a1e26;border:1px solid var(--line);
+  border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.55);overflow:hidden}
+.dd.open .dd-panel{display:flex;flex-direction:column}
+.dd-search{margin:8px;padding:7px 10px;border-radius:7px;width:calc(100% - 16px)}
+.dd-tools{display:flex;justify-content:space-between;align-items:center;
+  padding:2px 12px 6px;font-size:11px;color:var(--dim)}
+.dd-tools a{color:var(--bad);cursor:pointer}
+.dd-list{overflow:auto;padding:4px 6px 8px}
+.dd-item{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;cursor:pointer}
+.dd-item:hover{background:#222836}
+.dd-item.on{background:#1e2a44}
+.dd-item input{accent-color:var(--accent);width:14px;height:14px;pointer-events:none}
+.dd-item .sub{margin-left:auto;font-size:11px;color:var(--dim);white-space:nowrap}
+.xbtn{background:none;border:none;color:var(--dim);font-size:16px;padding:2px 8px;line-height:1}
+.xbtn:hover{color:var(--txt);border:none}
+#gate{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;
+  justify-content:center;z-index:200}
+#gate .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:26px 28px;width:330px}
+#gate h2{margin:0 0 4px;font-size:15px}
+#gate p{margin:0 0 16px;color:var(--dim);font-size:12px}
+#gate input{width:100%;margin-bottom:10px}
+#gate button{width:100%;background:var(--accent);border-color:var(--accent);color:#fff}
+#gateErr{color:var(--bad);font-size:12px;min-height:16px}
+</style>
+
+<div id="gate"><div class="box">
+  <h2>Cab Recommender</h2>
+  <p>Shared team password.</p>
+  <input id="pw" type="password" placeholder="Password" autocomplete="current-password">
+  <button id="go">Open</button>
+  <div id="gateErr"></div>
+</div></div>
+
+<header>
+  <h1>Cab Recommender</h1>
+  <div class="dd" id="ddBu">
+    <button class="dd-btn" id="buBtn">loading…</button>
+    <div class="dd-panel">
+      <input class="dd-search" id="buQ" placeholder="Search business unit…">
+      <div class="dd-list" id="buList"></div>
+    </div>
+  </div>
+  <input id="date" type="date">
+  <div class="dd" id="ddSh">
+    <button class="dd-btn" id="shBtn">all shifts</button>
+    <div class="dd-panel">
+      <input class="dd-search" id="shQ" placeholder="Search shift / office…">
+      <div class="dd-tools"><span id="shCount">0 selected</span><a id="shClear">Clear all</a></div>
+      <div class="dd-list" id="shList"></div>
+    </div>
+  </div>
+  <select id="status">
+    <option value="un">unassigned only</option>
+    <option value="all">all trips</option>
+  </select>
+  <input id="q" placeholder="trip id / landmark / cab" style="width:160px">
+  <button id="refresh">Refresh</button>
+  <span class="pill" id="stat">—</span>
+</header>
+<div id="banner"></div>
+<main>
+  <div id="left"><div class="empty">Loading…</div></div>
+  <div id="right"><div class="empty">Select a trip to see recommendations</div></div>
+</main>
+
+<script type="module">
+import {
+  History, scorePool, deriveWave, shiftSummary, hasVendor, pickProxies, hhmm,
+} from './scorer.js';
+
+let WAVE = null;          // {trips, byId, assigned, chains, shifts, fetched_at}
+let SHARD = null;         // the current BU's 30-day history bundle
+let HCACHE = new Map();   // "office|DIR" -> History
+let SEL = null, LAYER = null, SORT = { k: 'shift', asc: true };
+let BUID = null, BUS = [], SHIFT_SEL = new Set();
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+const RIGHT_EMPTY = '<div class="empty">Select a trip to see recommendations</div>';
+$('#date').value = new Date().toISOString().slice(0, 10);
+
+// ── auth gate ───────────────────────────────────────────────────────────
+// One shared password, same model as the Python service's UI_PASSWORD. It is
+// what keeps the history shards (which contain employee pickup geocodes) off a
+// public URL — see netlify/functions/_auth.mjs.
+async function api(path, opts) {
+  const r = await fetch(path, { credentials: 'same-origin', ...opts });
+  if (r.status === 401) { showGate(); throw new Error('auth required'); }
+  return r;
+}
+function showGate(msg) {
+  $('#gate').style.display = 'flex';
+  $('#gateErr').textContent = msg || '';
+  $('#pw').focus();
+}
+async function tryLogin() {
+  $('#gateErr').textContent = '';
+  const r = await fetch('/api/login', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: $('#pw').value }),
+  });
+  if (!r.ok) { $('#gateErr').textContent = (await r.json()).error || 'rejected'; return; }
+  $('#gate').style.display = 'none';
+  $('#pw').value = '';
+  await boot();
+}
+$('#go').onclick = tryLogin;
+$('#pw').onkeydown = (e) => { if (e.key === 'Enter') tryLogin(); };
+
+// ── dropdown plumbing ───────────────────────────────────────────────────
+function wireDd(id) {
+  const dd = $(id);
+  dd.querySelector('.dd-btn').onclick = (e) => {
+    e.stopPropagation();
+    const was = dd.classList.contains('open');
+    document.querySelectorAll('.dd.open').forEach((x) => x.classList.remove('open'));
+    if (!was) {
+      dd.classList.add('open');
+      const s = dd.querySelector('.dd-search');
+      s.value = ''; s.focus(); s.dispatchEvent(new Event('input'));
+    }
+  };
+  dd.querySelector('.dd-panel').onclick = (e) => e.stopPropagation();
+}
+document.addEventListener('click', () =>
+  document.querySelectorAll('.dd.open').forEach((x) => x.classList.remove('open')));
+
+// ── BU picker ───────────────────────────────────────────────────────────
+async function loadBuids() {
+  const idx = await (await api('/api/data')).json();
+  BUS = idx.buids || [];
+  BUID = BUS.some((b) => b.buid === 'ivycomptech-IVYHyd') ? 'ivycomptech-IVYHyd' : (BUS[0] || {}).buid;
+  renderBuList('');
+  $('#buBtn').textContent = BUID || '—';
+}
+function renderBuList(q) {
+  const f = BUS.filter((b) => b.buid.toLowerCase().includes(q));
+  $('#buList').innerHTML = f.map((b) => `
+    <div class="dd-item${b.buid === BUID ? ' on' : ''}" data-b="${esc(b.buid)}">
+      <input type="radio" ${b.buid === BUID ? 'checked' : ''}>
+      <span>${esc(b.buid)}</span>
+      <span class="sub">${b.offices} office${b.offices > 1 ? 's' : ''}</span>
+    </div>`).join('') || '<div class="empty" style="padding:14px">no match</div>';
+  document.querySelectorAll('#buList .dd-item').forEach((el) => {
+    el.onclick = async () => {
+      BUID = el.dataset.b;
+      $('#buBtn').textContent = BUID;
+      SHIFT_SEL.clear(); SEL = null; $('#right').innerHTML = RIGHT_EMPTY;
+      document.querySelectorAll('.dd.open').forEach((x) => x.classList.remove('open'));
+      await loadShard();
+      loadWave(true);
+    };
+  });
+}
+$('#buQ').oninput = (e) => renderBuList(e.target.value.toLowerCase());
+
+/** The BU's 30-day history. ~230 KB gzipped for the largest BU, fetched once
+ *  per BU switch and scored against entirely in the browser — which is why this
+ *  screen needs no server-side scoring at all. */
+async function loadShard() {
+  SHARD = null; HCACHE = new Map();
+  $('#stat').textContent = 'loading history…'; $('#stat').className = 'pill spin';
+  SHARD = await (await api(`/api/data?buid=${encodeURIComponent(BUID)}`)).json();
+}
+function histFor(office, direction) {
+  const k = `${office}|${direction}`;
+  let h = HCACHE.get(k);
+  if (!h) { h = new History(SHARD, office, direction); HCACHE.set(k, h); }
+  return h;
+}
+
+// ── shift picker ────────────────────────────────────────────────────────
+function renderShiftList(q) {
+  const sh = WAVE?.shifts || [];
+  const f = sh.filter((s) => `${s.direction} ${s.shift} ${s.office}`.toLowerCase().includes(q));
+  $('#shList').innerHTML = f.map((s) => {
+    const k = `${s.direction}|${s.shift}|${s.office}`;
+    return `<div class="dd-item${SHIFT_SEL.has(k) ? ' on' : ''}" data-k="${esc(k)}">
+      <input type="checkbox" ${SHIFT_SEL.has(k) ? 'checked' : ''}>
+      <span class="dir ${s.direction}">${s.direction}</span><b>${s.shift}</b>
+      <span class="dim" style="font-size:11px">${esc(s.office)}</span>
+      <span class="sub">${s.open}/${s.total} open</span>
+    </div>`;
+  }).join('') || '<div class="empty" style="padding:14px">no match</div>';
+  document.querySelectorAll('#shList .dd-item').forEach((el) => {
+    el.onclick = () => {
+      const k = el.dataset.k;
+      SHIFT_SEL.has(k) ? SHIFT_SEL.delete(k) : SHIFT_SEL.add(k);
+      shiftBtn(); renderShiftList($('#shQ').value.toLowerCase()); renderTrips();
+    };
+  });
+  $('#shCount').textContent = `${SHIFT_SEL.size} selected`;
+}
+const shiftBtn = () => {
+  $('#shBtn').textContent = SHIFT_SEL.size
+    ? `${SHIFT_SEL.size} shift${SHIFT_SEL.size > 1 ? 's' : ''} selected` : 'all shifts';
+};
+$('#shQ').oninput = (e) => renderShiftList(e.target.value.toLowerCase());
+$('#shClear').onclick = () => { SHIFT_SEL.clear(); shiftBtn(); renderShiftList(''); renderTrips(); };
+
+// ── wave ────────────────────────────────────────────────────────────────
+async function loadWave(force) {
+  if (!BUID) return;
+  $('#stat').textContent = 'loading…'; $('#stat').className = 'pill spin';
+  try {
+    const u = `/api/wave?buid=${encodeURIComponent(BUID)}&date=${$('#date').value}` +
+              (force ? '&force=1' : '');
+    const raw = await (await api(u)).json();
+    if (raw.error) {
+      $('#banner').style.display = 'block';
+      $('#banner').innerHTML = `<b>⚠ ${esc(raw.error)}</b>`;
+      $('#stat').textContent = 'error'; $('#stat').className = 'pill';
+      return;
+    }
+    $('#banner').style.display = 'none';
+
+    // Rebuilt from scratch every poll, never accumulated — so un-assigning a
+    // cab in MDS releases it here too.
+    const { byId, assigned, chains } = deriveWave(raw.trips);
+    WAVE = {
+      ...raw, byId, assigned, chains,
+      shifts: shiftSummary(raw.trips),
+      unassigned: raw.trips.filter((t) => !t.assigned).length,
+      deployed: new Set(raw.trips.filter((t) => t.cab).map((t) => t.cab)).size,
+    };
+
+    const valid = new Set(WAVE.shifts.map((s) => `${s.direction}|${s.shift}|${s.office}`));
+    [...SHIFT_SEL].forEach((k) => { if (!valid.has(k)) SHIFT_SEL.delete(k); });
+    shiftBtn(); renderShiftList($('#shQ').value.toLowerCase());
+
+    $('#stat').textContent =
+      `${WAVE.trips.length} trips · ${WAVE.unassigned} unassigned · ${WAVE.deployed} cabs out`;
+    $('#stat').className = 'pill';
+    renderTrips();
+
+    // The deployer assigns in the MDS tab. If the trip they are looking at HERE
+    // just got a cab there, say so rather than leaving a stale recommendation up.
+    if (SEL) {
+      const t = WAVE.byId.get(String(SEL));
+      if (t && t.assigned && !$('#staleNote')) {
+        $('#right').insertAdjacentHTML('afterbegin',
+          `<div id="staleNote" style="margin:10px 14px;padding:8px 10px;border-radius:6px;
+             background:#3a2a10;color:#fbbf24;font-size:12px">
+             ⚠ Trip ${esc(SEL)} was just assigned to <b>${esc(t.cab)}</b> in MDS —
+             these recommendations are stale.</div>`);
+      }
+    }
+  } catch (e) {
+    if (String(e.message) === 'auth required') return;
+    $('#stat').textContent = 'error';
+    $('#left').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+function rows() {
+  let r = WAVE ? WAVE.trips : [];
+  if ($('#status').value === 'un') r = r.filter((t) => !t.assigned);
+  if (SHIFT_SEL.size) {
+    r = r.filter((t) => SHIFT_SEL.has(`${t.direction}|${hhmm(t.shiftTime)}|${t.office}`));
+  }
+  const q = $('#q').value.toLowerCase();
+  if (q) {
+    r = r.filter((t) => `${t.tripId} ${t.landmark || ''} ${t.vendor || ''} ${t.cab || ''}`
+      .toLowerCase().includes(q));
+  }
+  const k = SORT.k, s = SORT.asc ? 1 : -1;
+  const key = (t) => (k === 'shift' ? hhmm(t.shiftTime)
+                    : k === 'cutOff' ? hhmm(t.cutOff) : t[k]);
+  return [...r].sort((a, b) =>
+    String(key(a) ?? '').localeCompare(String(key(b) ?? ''), undefined, { numeric: true }) * s);
+}
+
+function renderTrips() {
+  const r = rows();
+  const st = $('#left').scrollTop;        // the 30s poll re-renders; keep place
+  if (!r.length) { $('#left').innerHTML = '<div class="empty">No trips match</div>'; return; }
+  const today = new Date().toISOString().slice(0, 10);
+  const nowHM = new Date().toTimeString().slice(0, 5);
+  const cutPassed = (t) => !t.assigned && $('#date').value === today && hhmm(t.cutOff) < nowHM;
+  const cols = [['tripId', 'TRIP ID'], ['direction', 'DIR'], ['shift', 'SHIFT'],
+                ['cutOff', 'CUT OFF'], ['office', 'OFFICE'], ['landmark', 'LANDMARK'],
+                ['vendor', 'VENDOR'], ['capacity', 'CAP'], ['cab', 'CAB']];
+  $('#left').innerHTML = `<table><thead><tr>${
+    cols.map(([k, l]) => `<th data-k="${k}">${l}${SORT.k === k ? (SORT.asc ? ' ▲' : ' ▼') : ''}</th>`).join('')
+  }</tr></thead><tbody>${r.map((t) => `
+    <tr class="trip${SEL === String(t.tripId) ? ' sel' : ''}${t.assigned ? ' done' : ''}" data-id="${t.tripId}">
+      <td>${t.tripId}</td>
+      <td><span class="dir ${t.direction}">${t.direction}</span></td>
+      <td>${hhmm(t.shiftTime)}</td>
+      <td class="dim"${cutPassed(t) ? ' style="color:#ef4444;font-weight:600"' : ''}>${hhmm(t.cutOff)}</td>
+      <td class="dim">${esc(t.office)}</td>
+      <td>${esc(t.landmark) || '<span class="dim">—</span>'}</td>
+      <td class="dim">${hasVendor(t) ? esc(t.vendor) : '<span style="color:#fbbf24">not assigned</span>'}</td>
+      <td>${t.capacity}</td>
+      <td class="dim">${t.cab ? esc(t.cab) : ''}</td>
+    </tr>`).join('')}</tbody></table>`;
+  document.querySelectorAll('th').forEach((th) => {
+    th.onclick = () => {
+      const k = th.dataset.k;
+      SORT = SORT.k === k ? { k, asc: !SORT.asc } : { k, asc: true };
+      renderTrips();
+    };
+  });
+  // SEL is always a string: MDS returns tripId as a string, and coercing to a
+  // number here would make `SEL === String(t.tripId)` below never match, so the
+  // selected row would never highlight.
+  document.querySelectorAll('tr.trip').forEach((tr) => {
+    tr.onclick = () => select(tr.dataset.id);
+  });
+  $('#left').scrollTop = st;
+}
+
+// ── recommend ───────────────────────────────────────────────────────────
+// LAYER=null means auto: Layer 2 when the trip has no vendor, since there is no
+// same-vendor pool to stay inside. Clicking either toggle pins it for that trip.
+async function select(id, layer) {
+  id = String(id);
+  if (SEL !== id) LAYER = null;
+  if (layer !== undefined) LAYER = layer;
+  SEL = id; renderTrips();
+  $('#right').innerHTML = '<div class="empty spin">Scoring…</div>';
+  try {
+    const trip = WAVE.byId.get(id);
+    if (!trip) throw new Error(`trip ${id} is not in this wave`);
+
+    const auto = LAYER === null;
+    const cross = auto ? !hasVendor(trip) : LAYER === 2;
+    const proxies = pickProxies(WAVE.trips, trip, cross);
+
+    const res = await (await api(
+      `/api/pool?buid=${encodeURIComponent(BUID)}&guid=${proxies.map((p) => p.guid).join(',')}`)).json();
+    if (res.error) throw new Error(res.error);
+
+    // Union the pools, tagging each cab with the vendor whose pool it came from
+    // so Layer 2 can show where a suggestion is coming from.
+    const pool = [];
+    for (const p of proxies) {
+      for (const c of res.pools[p.guid] || []) pool.push({ ...c, __vendor: p.vendor });
+    }
+
+    const direction = trip.direction === 'IN' ? 'LOGIN' : 'LOGOUT';
+    const hist = histFor(trip.office, direction);
+    const already = new Set(WAVE.assigned.get(`${trip.shiftTime}|${trip.direction}`) || []);
+    let chains = WAVE.chains;
+
+    // For a trip that already has a cab, score it as if it were still open and
+    // report where the deployer's actual pick landed. MDS marks that cab busy
+    // *because* of this trip, so both the wave exclusion and its own chain entry
+    // have to be lifted or the very cab we want to rank is always rejected.
+    const own = trip.assigned ? trip.cab : null;
+    if (own) {
+      already.delete(own);
+      chains = new Map(chains);
+      chains.set(own, (chains.get(own) || []).filter((a) => a.tripId !== trip.tripId));
+    }
+
+    const out = scorePool(trip, pool, hist, {
+      waveAssigned: already, crossVendor: cross, chains,
+      explainRejects: true, findCab: own,
+    });
+    renderRecos({ trip, cross, auto, out, pool, already, hist, errors: res.errors });
+  } catch (e) {
+    if (String(e.message) === 'auth required') return;
+    $('#right').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+function closeRecos() {
+  SEL = null; LAYER = null;
+  $('#right').innerHTML = RIGHT_EMPTY;
+  renderTrips();
+}
+
+function card(r, i) {
+  return `<div class="card ${r.confidence}">
+    <div style="display:flex;justify-content:space-between;align-items:baseline">
+      <span class="reg">${i}. ${esc(r.cab)}</span>
+      <span class="dim" style="font-size:11px">${esc(r.subvendor || r.vendor || '')}</span></div>
+    <div class="ev">${esc(r.evidence)}</div>
+    <div class="meta">
+      <span class="tag ${r.confidence === 'strong' ? 't' : ''}">${r.confidence}</span>
+      ${r.n_exact ? `<span class="tag t">${r.n_exact}× exact route</span>` : ''}
+      ${r.deadhead_km != null ? `<span class="tag">${r.deadhead_km} km away</span>` : ''}
+      <span class="tag${r.feasibility === 'time-only' ? ' warn' : ''}">${r.feasibility} check</span>
+      ${r.fault_rate >= 0.10 ? `<span class="tag warn">fault ${Math.round(r.fault_rate * 100)}%</span>` : ''}
+      ${r.driver ? `<span class="tag">${esc(r.driver)}</span>` : ''}
+    </div></div>`;
+}
+
+function renderRecos({ trip, cross, auto, out, pool, already, hist, errors }) {
+  const vendored = hasVendor(trip);
+  const found = out.found;
+  $('#right').innerHTML = `<div class="rp">
+    <div class="rhead">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:15px;font-weight:600">Trip ${trip.tripId}</div>
+        <button class="xbtn" id="closeR" title="close">✕</button>
+      </div>
+      <div class="dim" style="margin-top:4px">
+        <span class="dir ${trip.direction}">${trip.direction}</span> ${hhmm(trip.shiftTime)} ·
+        ${esc(trip.landmark)} · ${trip.capacity}S · cut-off ${hhmm(trip.cutOff)}</div>
+      <div class="dim" style="margin-top:3px">vendor ${
+        vendored ? esc(trip.vendor) : '<b style="color:#fbbf24">not assigned</b>'}</div>
+      <div class="toggle">
+        <button id="l1" class="${cross ? '' : 'on'}" ${vendored ? '' : 'disabled'}>Same vendor</button>
+        <button id="l2" class="${cross ? 'on' : ''}">Any vendor</button>
+      </div>
+      ${auto && cross ? '<div class="dim" style="font-size:11px;margin-bottom:6px">no vendor on this trip — showing all vendors</div>' : ''}
+      ${out.noCapacity ? `<div style="font-size:11px;margin-bottom:6px;padding:6px 8px;border-radius:5px;
+        background:#3a2a10;color:#fbbf24">⚠ MDS states no cab capacity for this trip, so capacity
+        has not been filtered on. Check the seater is right before assigning.</div>` : ''}
+      ${!hist.total ? `<div style="font-size:11px;margin-bottom:6px;padding:6px 8px;border-radius:5px;
+        background:#3a2a10;color:#fbbf24">⚠ No history for <b>${esc(trip.office)}</b> in the 30-day
+        extract, which is scoped to Hyderabad. These are the feasible cabs ordered by distance —
+        there is nothing here about who usually runs this route.</div>` : ''}
+      ${out.noAnchor ? `<div style="font-size:11px;margin-bottom:6px;padding:6px 8px;border-radius:5px;
+        background:#3a2a10;color:#fbbf24">⚠ MDS has no ${trip.direction === 'IN' ? 'pickup' : 'drop'}
+        coordinate for this trip, so route history cannot be used. These are the feasible cabs
+        ordered by how far away they are — check the choice yourself.</div>` : ''}
+      ${errors ? `<div class="dim" style="font-size:11px;color:#fbbf24;margin-bottom:6px">${
+        Object.keys(errors).length} vendor pool(s) failed to load — results are partial</div>` : ''}
+      <div class="dim" style="font-size:11px">
+        ${pool.length} cabs → ${out.eligible} feasible ·
+        ${already.size} already deployed this wave ·
+        ${hist.total.toLocaleString()} historic trips at this site</div>
+    </div>
+    ${found ? `<div class="card actual">
+      <div class="dim" style="font-size:11px;margin-bottom:4px">deployer picked</div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span class="reg">${esc(found.cab)}</span>
+        <span class="tag ${found.rank && found.rank <= 3 ? 't' : ''}">${
+          found.rank ? `we ranked it #${found.rank}` : 'not in our list'}</span></div>
+      ${found.rank ? `<div class="ev">${esc(found.evidence)}</div>`
+                   : `<div class="ev">${esc(found.why)}</div>`}
+    </div>` : ''}
+    ${out.top.length ? out.top.map((r, i) => card(r, i + 1)).join('')
+                     : '<div class="empty">No feasible cab found</div>'}
+    <div class="dim" style="font-size:10.5px;margin-top:10px">
+      wave as of ${esc(new Date(WAVE.fetched_at).toLocaleTimeString())} ·
+      history ${esc(SHARD.from)} → ${esc(SHARD.to)}</div>
+  </div>`;
+  $('#closeR').onclick = closeRecos;
+  $('#l1').onclick = () => select(SEL, 1);
+  $('#l2').onclick = () => select(SEL, 2);
+}
+
+// ── boot ────────────────────────────────────────────────────────────────
+wireDd('#ddBu'); wireDd('#ddSh');
+$('#refresh').onclick = () => loadWave(true);
+$('#date').onchange = () => {
+  SHIFT_SEL.clear(); shiftBtn(); SEL = null;
+  $('#right').innerHTML = RIGHT_EMPTY; loadWave(true);
+};
+$('#status').onchange = renderTrips;
+$('#q').oninput = renderTrips;
+
+async function boot() {
+  await loadBuids();
+  await loadShard();
+  await loadWave(false);
+}
+
+const probe = await fetch('/api/login', { credentials: 'same-origin' });
+if (probe.status === 503) {
+  $('#left').innerHTML = `<div class="empty">${esc((await probe.json()).error)}</div>`;
+} else if ((await probe.json()).authed) {
+  boot();
+} else {
+  showGate();
+}
+setInterval(() => { if ($('#gate').style.display !== 'flex') loadWave(false); }, 30000);
+</script>

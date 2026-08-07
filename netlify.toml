@@ -1,0 +1,34 @@
+# Netlify site config. The repo root holds the Python reference implementation
+# (recommend.py, backtest.py) that established the scoring constants; the
+# deployable web port lives in web/ and is what this site builds.
+#
+# Keeping both in one repo is deliberate: web/public/scorer.js is a hand port of
+# recommend.py, and if they drift the recommendations silently stop matching
+# what was backtested. Same repo means a drift shows up in one diff.
+
+[build]
+  base = "web"
+  command = "npm run build"
+  publish = "public"
+
+[functions]
+  directory = "netlify/functions"
+  # The history shards live in web/data/, NOT web/public/, because they carry
+  # employee pickup geocodes and public/ is world-readable. Bundling them here
+  # lets data.mjs serve them behind the shared-password check.
+  included_files = ["data/**"]
+
+  # wave.mjs fans out across MDS shift batches — a large BU is ~28 parallel
+  # trip/filter calls. Measured 8.1s cold on the equivalent VCF function; the
+  # default 10s budget is too close to that.
+  [functions.wave]
+    timeout = 26
+
+  # pool.mjs fetches one vehicle pool per vendor for Layer 2, in parallel.
+  [functions.pool]
+    timeout = 26
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200

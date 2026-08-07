@@ -1,0 +1,10 @@
+# Build output — regenerated from Metabase on every deploy. Not committed
+# because it contains employee pickup geocodes, and ~1.4 MB of churning binary
+# would be a poor thing to keep in git history regardless.
+data/
+
+# Verification fixture: real trips, real pools, captured live. Same reason.
+fixture.json
+
+node_modules/
+.netlify/

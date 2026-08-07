@@ -1,0 +1,41 @@
+# fly launch --no-deploy   (then set secrets, create the volume, fly deploy)
+app = "mds-cab-recommender"
+primary_region = "bom"          # Mumbai — closest to Hyderabad and to MDS
+
+[build]
+
+[env]
+  PORT = "8770"
+  TZ = "Asia/Kolkata"
+  SYNC_AT_HHMM = "2200"
+
+[[mounts]]
+  source = "recodata"           # fly volumes create recodata --size 3 --region bom
+  destination = "/app/data"     # history.db (~90 MB) + reco_log survive restarts
+
+[http_service]
+  internal_port = 8770
+  force_https = true
+  # The sweeper must keep predicting through the night and the nightly sync has
+  # to fire at 22:00, so this machine stays up. Auto-stop would silently skip
+  # both and leave gaps in the accuracy study.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 40
+    hard_limit = 80
+
+[checks.health]
+  type = "http"
+  port = 8770
+  path = "/health"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10m"          # cold start does a full backfill before serving
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"              # history is held in memory per (office,direction)
