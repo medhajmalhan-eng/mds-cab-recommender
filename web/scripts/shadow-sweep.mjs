@@ -12,9 +12,9 @@
 // thousands of real decisions to score against instead of the handful we can
 // argue about by hand.
 //
-// It also measures the right thing in a way the offline backtest cannot. The
-// backtest reconstructs candidates from history; this uses the LIVE MDS pool,
-// so the feasibility gate, busy flags and deadheads are all in play.
+// It also measures the right thing in a way the offline backtest cannot: the
+// feasibility step here runs against each candidate's LIVE schedule (Completed,
+// Ongoing and future Planned trips, cross-BU), exactly as the screen does.
 //
 // THE ONE RULE THAT MAKES THIS HONEST
 // -----------------------------------
@@ -45,9 +45,9 @@ import { readFile, readdir, mkdir, appendFile } from 'node:fs/promises';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import path from 'node:path';
 
-import { trips as mdsTrips, vendorGuids, vehicles } from '../netlify/functions/_mds.mjs';
+import { trips as mdsTrips, vendorGuids, cabChain } from '../netlify/functions/_mds.mjs';
 import {
-  History, scorePool, deriveWave, hasVendor, pickProxies, hhmm,
+  History, scorePool, deriveWave, hasVendor, candidatesFor, hhmm,
 } from '../public/scorer.js';
 
 const DATA = path.join(process.cwd(), 'data');
@@ -92,43 +92,26 @@ const arg = (k, d) => {
 
 const iso = (d) => d.toISOString().slice(0, 10);
 
-// ── pool encoding ───────────────────────────────────────────────────────
-// The pool snapshot is what makes offline iteration possible, and it is also
-// 95% of the bytes. Stored as objects it was 28.7 KB per prediction — 309 MB a
-// month into git, which turns a useful record into a liability. Positional
-// arrays with a flag bitmask, then gzip, bring that to roughly 1 KB.
-//
-// Column order is FIXED. Anything reading these files must use decodeCab below;
-// do not index the array by hand at the call site.
-export const POOL_COLUMNS = ['reg', 'capacity', 'flags', 'deadhead_m', 'nt_hour', 'nt_min', 'vendor'];
-const F_ACTIVE = 1, F_VIRTUAL = 2, F_BUSY = 4, F_COMPLIANT = 8;
+// How far down the pre-feasibility ranking to check live schedules. Deep enough
+// that 10 usually survive; shallow enough that a prediction costs ~15 MDS calls,
+// not 150. Candidates below this depth had no realistic chance of the top 5.
+const FEAS_DEPTH = 15;
 
-const encodeCab = (c) => [
-  c.cabRegNo,
-  c.capacity ?? -1,
-  (c.cabActive ? F_ACTIVE : 0) | (c.virtual ? F_VIRTUAL : 0) |
-  (c.busyVehicle ? F_BUSY : 0) | (c.complianceStatus === 'Compliant' ? F_COMPLIANT : 0),
-  (c.emptyLegInMetres == null || c.emptyLegInMetres < 0) ? -1 : Math.round(c.emptyLegInMetres),
-  c.vehicleNextTripDetails?.hour ?? -1,
-  c.vehicleNextTripDetails?.min ?? -1,
-  c.__vendor || '',
-];
+import { feasible } from '../public/scorer.js';
 
-/** Rebuild the shape scorePool() expects. Used by the replay/iteration tooling. */
-export function decodeCab(a) {
-  const [reg, capacity, flags, dead, nth, ntm, vendor] = a;
-  return {
-    cabRegNo: reg,
-    capacity: capacity === -1 ? null : capacity,
-    cabActive: !!(flags & F_ACTIVE),
-    virtual: !!(flags & F_VIRTUAL),
-    busyVehicle: !!(flags & F_BUSY),
-    complianceStatus: (flags & F_COMPLIANT) ? 'Compliant' : 'Non-Compliant',
-    emptyLegInMetres: dead === -1 ? null : dead,
-    nextTrip: nth === -1 ? null : { hour: nth, min: ntm === -1 ? 0 : ntm },
-    __vendor: vendor || null,
-  };
+/** The shipped chain check, applied to a history candidate + its live schedule.
+ *  The candidate has no busy flag and no nextTrip (those were pool concepts);
+ *  the chain IS the source of truth now. */
+function feasibleFromChain(rec, trip, chain) {
+  return feasible({ busyVehicle: false, nextTrip: null }, trip, chain, false);
 }
+
+/** Compact chain encoding for the log: [start_s, end_s, slat, slng, elat, elng,
+ *  status0] — enough to replay feasibility offline without re-fetching MDS. */
+const encodeChain = (chain) => chain.map((a) => [
+  Math.round(a.start), Math.round(a.end),
+  a.slat, a.slng, a.elat, a.elng, (a.status || '?')[0],
+]);
 
 async function shardFor(buid) {
   const gz = await readFile(path.join(DATA, `${buid}.json.gz`));
@@ -167,6 +150,7 @@ async function sweepBu(buid, day, stamp, budget) {
   const slim = raw.map((t) => ({
     tripId: t.tripId, tripGuid: t.tripGuid, direction: t.tripDirection,
     shiftTime: t.shiftTime, office: t.officeName, vendor: t.vendorName,
+    subvendor: t.subvendor || null,
     capacity: t.plannedCabCapacity, cutOff: t.assignmentCutOffTime,
     start: t.tripStartTime, end: t.tripEndTime,
     startGeo: t.tripStartGeoCord, endGeo: t.tripEndGeoCord,
@@ -181,50 +165,65 @@ async function sweepBu(buid, day, stamp, budget) {
   const lines = [];
   const histCache = new Map();
 
-  // Fetch every pool for this BU up front, in parallel. Serially this was ~1.2s
-  // per trip and dominated the run; the scoring itself is ~3ms.
-  const fetched = await mapPool(picked, POOL_CONCURRENCY, async (trip) => {
-    const cross = !hasVendor(trip);
-    const proxies = pickProxies(slim, trip, cross);
-    const pools = await Promise.all(proxies.map((p) =>
-      vehicles(buid, p.guid).then((v) => [p, v]).catch(() => [p, []])));
-    return { trip, cross, pools };
-  });
-
-  for (const { trip, cross, pools } of fetched) {
+  for (const trip of picked) {
     try {
-      // Layer follows what the screen would do unprompted: same-vendor when the
-      // trip has a vendor, any-vendor when it does not. (Decided during the
-      // parallel fetch above, so it travels with the pool.)
-      const pool = [];
-      for (const [p, cabs] of pools) {
-        for (const c of cabs) {
-          pool.push({
-            cabRegNo: c.cabRegNo, capacity: c.capacity, cabActive: c.cabActive,
-            virtual: c.virtual, busyVehicle: c.busyVehicle,
-            complianceStatus: c.complianceStatus,
-            emptyLegInMetres: c.emptyLegInMetres, subVendorName: c.subVendorName,
-            driver: c.drivers?.[0]?.driverName || null,
-            vehicleNextTripDetails: c.vehicleNextTripDetails || null,
-            nextTrip: c.vehicleNextTripDetails
-              ? { hour: c.vehicleNextTripDetails.hour, min: c.vehicleNextTripDetails.min,
-                  buid: c.vehicleNextTripDetails.buid }
-              : null,
-            __vendor: p.vendor,
-          });
-        }
-      }
-      if (!pool.length) continue;
-
+      // THE PIPELINE (rebuilt 2026-08-08): candidates from HISTORY, feasibility
+      // from live per-cab schedules, top 5 of what survives.
+      //
+      // The old pipeline ranked inside MDS's per-trip suggestion list. Deployers
+      // ignore that list, and measured on 228 live predictions it omitted a
+      // median 25% of the cabs that regularly run the site — one site had 53
+      // regulars and the list contained none of them. Live accuracy: 10.5%
+      // top-1. Replaying the same decisions with history candidates matched
+      // that BEFORE feasibility filtering, and feasibility only removes
+      // competitors.
+      const cross = !hasVendor(trip);
       const dir = trip.direction === 'IN' ? 'LOGIN' : 'LOGOUT';
       const hk = `${trip.office}|${dir}`;
       if (!histCache.has(hk)) histCache.set(hk, new History(shard, trip.office, dir));
       const hist = histCache.get(hk);
+      if (!hist.total) continue;                 // nothing knowable about this site
+
+      const pool = candidatesFor(trip, hist, { crossVendor: cross });
+      if (!pool.length) continue;
       const already = new Set(assigned.get(`${trip.shiftTime}|${trip.direction}`) || []);
 
-      const out = scorePool(trip, pool, hist, {
-        waveAssigned: already, crossVendor: cross, chains, topn: 10,
+      // Rank on history first — pure computation, no MDS involved.
+      const pre = scorePool(trip, pool, hist, {
+        waveAssigned: already, crossVendor: cross, chains, topn: FEAS_DEPTH,
       });
+
+      // Live feasibility, most-promising first: fetch each candidate's actual
+      // schedule for the day (all BUs, with geocodes) and run the chain check.
+      // Stop once TOPN have survived — a cab we never fetched is reported as
+      // unchecked, never assumed free.
+      const dayMs = Date.parse(`${day}T00:00:00+05:30`);
+      const win = [dayMs - 6 * 3600e3, dayMs + 30 * 3600e3];
+      const verdicts = [];                       // {cab, ok, why, chainLen}
+      const surviving = [];
+      const headCabs = pre.top.map((r) => r.cab);
+      const fetchedChains = await mapPool(headCabs, POOL_CONCURRENCY, async (cab) => {
+        try { return [cab, await cabChain(cab, win[0], win[1])]; }
+        catch (e) { return [cab, null, String(e.message)]; }
+      });
+      const chainOf = new Map(fetchedChains.map((x) => [x[0], x]));
+      for (const r of pre.top) {
+        if (surviving.length >= 10) break;
+        const [, chain, err] = chainOf.get(r.cab) || [];
+        if (chain === null || chain === undefined) {
+          verdicts.push({ cab: r.cab, ok: false, why: `schedule fetch failed: ${err || '?'}` });
+          continue;
+        }
+        // drop THIS trip from its own chain if it appears (it is still open, so
+        // it should not, but planned data can be ahead of trip/filter)
+        const own = chain.filter((a) => String(a.tripId) !== String(trip.tripId));
+        const f = feasibleFromChain(r, trip, own);
+        verdicts.push({ cab: r.cab, ok: f.ok, why: f.why, chain: own.length });
+        if (f.ok) surviving.push({ ...r, feasibility: 'full', chain_trips: own.length });
+      }
+
+      const out = { top: surviving.slice(0, 10), eligible: pre.eligible,
+                    noAnchor: pre.noAnchor, noCapacity: pre.noCapacity };
 
       lines.push(JSON.stringify({
         ts: stamp,
@@ -239,6 +238,7 @@ async function sweepBu(buid, day, stamp, budget) {
         // the prediction unanswerable rather than wrong. Reconcile buckets those
         // separately, and it can only do that if we write this down now.
         vendor: trip.vendor,
+        subvendor: trip.subvendor,
         capacity: trip.capacity,
         layer: cross ? 2 : 1,
         pool_size: pool.length,
@@ -254,12 +254,15 @@ async function sweepBu(buid, day, stamp, budget) {
           deadhead_km: r.deadhead_km, feasibility: r.feasibility,
           confidence: r.confidence, vendor: r.vendor,
         })),
-        // The pool exactly as it was. This is what makes iteration possible
-        // WITHOUT a live re-run: any future scoring idea can be replayed against
-        // thousands of real decisions offline, with no survivorship, in seconds.
-        // Positional — decode with decodeCab(), never by index at the call site.
-        pool_cols: POOL_COLUMNS,
-        pool: pool.map(encodeCab),
+        // Candidates are REPRODUCIBLE from history (site+direction+window), so
+        // they are not logged — only the regs, for the coverage check. What is
+        // NOT reproducible later is the live state: each checked cab's actual
+        // schedule at prediction time, and the verdict it got. That is what
+        // makes offline replay of feasibility possible without re-fetching MDS.
+        candidates: pool.map((c) => c.cabRegNo),
+        feas: verdicts,
+        chains_checked: Object.fromEntries(
+          fetchedChains.filter((x) => x[1]).map(([cab, ch]) => [cab, encodeChain(ch)])),
         trip_attrs: {
           start: trip.start, end: trip.end,
           startGeo: trip.startGeo, endGeo: trip.endGeo,

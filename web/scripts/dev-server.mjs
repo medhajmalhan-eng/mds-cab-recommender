@@ -19,7 +19,8 @@ const ROUTES = {
   '/api/login': () => import('../netlify/functions/login.mjs'),
   '/api/data': () => import('../netlify/functions/data.mjs'),
   '/api/wave': () => import('../netlify/functions/wave.mjs'),
-  '/api/pool': () => import('../netlify/functions/pool.mjs'),
+  '/api/pool': () => import('../netlify/functions/pool.mjs'),   // legacy cross-check only
+  '/api/sched': () => import('../netlify/functions/sched.mjs'),
 };
 
 const MIME = {

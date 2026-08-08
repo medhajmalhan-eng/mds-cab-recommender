@@ -126,7 +126,8 @@ tr.done td{opacity:.4}
 
 <script type="module">
 import {
-  History, scorePool, deriveWave, shiftSummary, hasVendor, pickProxies, hhmm,
+  History, scorePool, deriveWave, shiftSummary, hasVendor, candidatesFor,
+  feasible, hhmm,
 } from './scorer.js';
 
 let WAVE = null;          // {trips, byId, assigned, chains, shifts, fetched_at}
@@ -387,28 +388,21 @@ async function select(id, layer) {
 
     const auto = LAYER === null;
     const cross = auto ? !hasVendor(trip) : LAYER === 2;
-    const proxies = pickProxies(WAVE.trips, trip, cross);
 
-    const res = await (await api(
-      `/api/pool?buid=${encodeURIComponent(BUID)}&guid=${proxies.map((p) => p.guid).join(',')}`)).json();
-    if (res.error) throw new Error(res.error);
-
-    // Union the pools, tagging each cab with the vendor whose pool it came from
-    // so Layer 2 can show where a suggestion is coming from.
-    const pool = [];
-    for (const p of proxies) {
-      for (const c of res.pools[p.guid] || []) pool.push({ ...c, __vendor: p.vendor });
-    }
-
+    // THE PIPELINE (rebuilt 2026-08-08):
+    //   candidates from HISTORY -> score -> live feasibility on the top 15 -> 5.
+    // MDS's per-trip suggestion list is no longer consulted: deployers ignore
+    // it, and measured on 228 live predictions it omitted a median 25% of the
+    // cabs that regularly run the site. MDS is asked exactly one thing — each
+    // top candidate's real schedule today (all BUs, with locations).
     const direction = trip.direction === 'IN' ? 'LOGIN' : 'LOGOUT';
     const hist = histFor(trip.office, direction);
+    const pool = candidatesFor(trip, hist, { crossVendor: cross });
     const already = new Set(WAVE.assigned.get(`${trip.shiftTime}|${trip.direction}`) || []);
     let chains = WAVE.chains;
 
     // For a trip that already has a cab, score it as if it were still open and
-    // report where the deployer's actual pick landed. MDS marks that cab busy
-    // *because* of this trip, so both the wave exclusion and its own chain entry
-    // have to be lifted or the very cab we want to rank is always rejected.
+    // report where the deployer's actual pick landed.
     const own = trip.assigned ? trip.cab : null;
     if (own) {
       already.delete(own);
@@ -416,11 +410,36 @@ async function select(id, layer) {
       chains.set(own, (chains.get(own) || []).filter((a) => a.tripId !== trip.tripId));
     }
 
-    const out = scorePool(trip, pool, hist, {
+    const pre = scorePool(trip, pool, hist, {
       waveAssigned: already, crossVendor: cross, chains,
-      explainRejects: true, findCab: own,
+      explainRejects: true, findCab: own, topn: 15,
     });
-    renderRecos({ trip, cross, auto, out, pool, already, hist, errors: res.errors });
+
+    // Live check: fetch the top candidates' actual schedules and keep the first
+    // five that can physically do this trip. A cab whose schedule could not be
+    // fetched is dropped, never assumed free.
+    let out = { ...pre, top: [], checked: 0, feasFailed: [] };
+    if (pre.top.length) {
+      const sched = await (await api('/api/sched', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cabs: pre.top.map((r) => r.cab), date: $('#date').value }),
+      })).json();
+      for (const r of pre.top) {
+        if (out.top.length >= 5) break;
+        const raw = sched.chains?.[r.cab];
+        out.checked++;
+        if (!raw) { out.feasFailed.push({ cab: r.cab, why: 'schedule unavailable' }); continue; }
+        // /api/sched returns chain entries in feasible()'s own shape; just drop
+        // THIS trip if MDS already lists it (it is open, but Planned data can
+        // run ahead of trip/filter).
+        const chain = raw.filter((a) => String(a.tripId) !== String(trip.tripId));
+        const f = feasible({ busyVehicle: false, nextTrip: null }, trip, chain, r.cab === own);
+        if (f.ok) out.top.push({ ...r, feasibility: 'full', chain_trips: chain.length });
+        else out.feasFailed.push({ cab: r.cab, why: f.why });
+      }
+    }
+    renderRecos({ trip, cross, auto, out, pool, already, hist });
   } catch (e) {
     if (String(e.message) === 'auth required') return;
     $('#right').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
@@ -443,7 +462,7 @@ function card(r, i) {
       <span class="tag ${r.confidence === 'strong' ? 't' : ''}">${r.confidence}</span>
       ${r.n_exact ? `<span class="tag t">${r.n_exact}× exact route</span>` : ''}
       ${r.deadhead_km != null ? `<span class="tag">${r.deadhead_km} km away</span>` : ''}
-      <span class="tag${r.feasibility === 'time-only' ? ' warn' : ''}">${r.feasibility} check</span>
+      <span class="tag t">free now · ${r.chain_trips ?? '?'} trip${r.chain_trips === 1 ? '' : 's'} today</span>
       ${r.fault_rate >= 0.10 ? `<span class="tag warn">fault ${Math.round(r.fault_rate * 100)}%</span>` : ''}
       ${r.driver ? `<span class="tag">${esc(r.driver)}</span>` : ''}
     </div></div>`;
@@ -482,9 +501,12 @@ function renderRecos({ trip, cross, auto, out, pool, already, hist, errors }) {
       ${errors ? `<div class="dim" style="font-size:11px;color:#fbbf24;margin-bottom:6px">${
         Object.keys(errors).length} vendor pool(s) failed to load — results are partial</div>` : ''}
       <div class="dim" style="font-size:11px">
-        ${pool.length} cabs → ${out.eligible} feasible ·
+        ${pool.length} candidates from 30d history → ${out.eligible} scored →
+        top ${out.checked || 0} checked against live schedules ·
         ${already.size} already deployed this wave ·
         ${hist.total.toLocaleString()} historic trips at this site</div>
+      ${out.feasFailed?.length ? `<div class="dim" style="font-size:11px;margin-top:3px">
+        ${out.feasFailed.length} busy or unreachable: ${esc(out.feasFailed.map((f) => f.cab).slice(0, 4).join(', '))}${out.feasFailed.length > 4 ? '…' : ''}</div>` : ''}
     </div>
     ${found ? `<div class="card actual">
       <div class="dim" style="font-size:11px;margin-bottom:4px">deployer picked</div>

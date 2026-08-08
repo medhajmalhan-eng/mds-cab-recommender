@@ -88,7 +88,11 @@ async function main() {
     const chosen = String(f.cabReg).trim();
     const order = p.recs.map((r) => r.cab);
     const rank = order.indexOf(chosen) >= 0 ? order.indexOf(chosen) + 1 : null;
-    const inPool = p.pool.some((c) => c[0] === chosen);
+    // old logs carry the MDS pool snapshot; new logs carry the history
+    // candidate list. Either way the question is the same: was the deployer's
+    // cab even in the set we ranked?
+    const inPool = p.candidates ? p.candidates.includes(chosen)
+                                : (p.pool || []).some((c) => c[0] === chosen);
     const vendorChanged = String(f.vendorName || '') !== String(p.vendor || '');
 
     tally.resolved++;
@@ -111,6 +115,11 @@ async function main() {
       // were ranking a pool the answer could not have been in. Reports exclude
       // these from headline accuracy and count them separately.
       vendor_changed: vendorChanged,
+      sv_at_prediction: p.subvendor ?? null,
+      sv_final: f.subvendor ?? null,
+      // if the subvendor changed after we filtered candidates by it, the right
+      // cab was structurally outside our list — same class as vendor_changed
+      sv_changed: (p.subvendor ?? null) !== null && (f.subvendor ?? null) !== (p.subvendor ?? null),
       chosen, rank,
       // in_pool distinguishes "we ranked it badly" from "MDS never offered it".
       // Only the first is a scoring problem.

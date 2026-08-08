@@ -56,6 +56,9 @@ export default async (req) => {
         shiftTime: t.shiftTime,
         office: t.officeName,
         vendor: t.vendorName,
+        // the SUBVENDOR (real operating unit); set on open trips before a cab
+        // is picked, so the browser can filter candidates the way deployers do
+        subvendor: t.subvendor || null,
         capacity: t.plannedCabCapacity,
         cutOff: t.assignmentCutOffTime,
         start: t.tripStartTime,

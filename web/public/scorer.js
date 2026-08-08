@@ -150,8 +150,66 @@ export class History {
     for (const [ci, [n, rate]] of Object.entries(bundle.faults?.[office] || {})) {
       this.faults.set(cabs[ci], { n, fault: rate });
     }
+    // cab -> {vendor, capacity}: the cab's MASTER vendor (MDS's own vocabulary)
+    // and seat count, from its most recent trip at this BU. This is what lets
+    // candidates come from history instead of MDS's suggestion list.
+    this.meta = new Map();
+    for (const [ci, [vendor, capacity, subvendor]] of Object.entries(bundle.cab_meta || {})) {
+      this.meta.set(cabs[ci], { vendor, capacity, subvendor: subvendor || null });
+    }
   }
   get total() { return this.rows.length; }
+}
+
+// ── candidates ──────────────────────────────────────────────────────────
+/**
+ * The candidate pool, built from HISTORY — every cab that has worked this
+ * site+direction in the window — instead of MDS's per-trip suggestion list.
+ *
+ * Why: measured on 228 live predictions, MDS's list omitted a median 25% of the
+ * cabs that regularly run the site (79 of 228 predictions were missing over
+ * HALF of the regulars; one site had 53 regulars and the list contained none of
+ * them). Deployers ignore that list; ranking inside it capped us at whatever it
+ * happened to contain.
+ *
+ * Vendor filter is on the MASTER vendor, case-folded: 'MIS-One' and 'MIS-ONE'
+ * both occur in the extract. Subvendor names must NOT be used here — one master
+ * spans several subvendors, and matching on subvendor excluded the deployer's
+ * actual pick in 58 of 102 replayed decisions.
+ *
+ * Everything here is knowable BEFORE assignment. Feasibility (is the cab free
+ * right now) is a separate, later step against live schedules — see feasible().
+ */
+export function candidatesFor(trip, hist, { crossVendor = false } = {}) {
+  const wantVendor = String(trip.vendor || '').trim().toLowerCase();
+  const wantSv = String(trip.subvendor || '').trim();
+  const wantCap = trip.capacity;
+  const out = [];
+  for (const [cab, m] of hist.meta) {
+    if (!hist.byCab.has(cab)) continue;          // meta exists but not at this office+dir
+    if (wantCap && m.capacity && m.capacity !== wantCap) continue;
+    if (!crossVendor) {
+      if (wantSv) {
+        // The trip already names its SUBVENDOR — the deployer's own workflow is
+        // subvendor first, cab second (live waves show open trips carrying it).
+        // Same vocabulary on both sides, so this is an exact match.
+        // Backtested: +0.9 top-1 / +2.0 top-5 over the master-vendor filter.
+        if (String(m.subvendor || '').trim() !== wantSv) continue;
+      } else if (trip.vendor) {
+        if (String(m.vendor || '').trim().toLowerCase() !== wantVendor) continue;
+      }
+    }
+    out.push({
+      cabRegNo: cab,
+      capacity: wantCap || m.capacity,
+      cabActive: true, virtual: false, busyVehicle: false,
+      complianceStatus: 'Compliant',      // unknown from history; flagged, not faked — see UI
+      emptyLegInMetres: null,             // no live GPS; deadhead comes from the chain check
+      subVendorName: null,
+      __vendor: m.vendor || null,
+    });
+  }
+  return out;
 }
 
 // ── feasibility ─────────────────────────────────────────────────────────

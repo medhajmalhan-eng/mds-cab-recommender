@@ -69,7 +69,7 @@ jobs:
           # Stale means "built for a different day". Recency weighting is
           # relative to build date, so yesterday's shard quietly mis-weights
           # every cab by a day.
-          BUILT=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/buids.json')).built_at.slice(0,10))}catch(e){console.log('none')}")
+          BUILT=$(node -e "try{const j=JSON.parse(require('fs').readFileSync('data/buids.json'));console.log((j.format===2?j.built_at.slice(0,10):'old-format'))}catch(e){console.log('none')}")
           TODAY=$(TZ=Asia/Kolkata date +%F)
           if [ "$BUILT" != "$TODAY" ]; then
             echo "history is '$BUILT', today is '$TODAY' — rebuilding"

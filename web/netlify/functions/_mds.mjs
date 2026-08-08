@@ -166,8 +166,52 @@ export async function trips(buid, guids, dayMs) {
 
 // distance=true is REQUIRED: with distance=false, emptyLegInMetres comes back
 // as -1 for every cab and the deadhead gate silently stops filtering.
+//
+// NOTE: no longer the candidate source. Measured on 228 live predictions, this
+// list omitted a median 25% of the cabs that regularly run the site (one site:
+// 53 regulars, zero offered). Candidates now come from history
+// (scorer.candidatesFor); this remains only as a cross-check.
 export async function vehicles(buid, tripGuid) {
   const g = encodeURIComponent(tripGuid).replace(/%24/g, '$');
   const r = await call(`/fis/cds/vendor/trips/${buid}/${g}/vehicles?distance=true`);
   return r?.data || [];
+}
+
+/**
+ * One cab's schedule for a time window — Completed, Ongoing AND future Planned
+ * trips, across ALL BUs, each with start/end times and pickup/drop geocodes.
+ * Verified live 2026-08-08 (TG-08-V-2063: completed 10:00, ongoing 11:30,
+ * planned 14:20 — all in one response).
+ *
+ * This is the real-time feasibility primitive: everything the old pool's
+ * busyVehicle/vehicleNextTripDetails pretended to be, except with locations,
+ * dates, and cross-BU visibility.
+ *
+ * Returns a chain in the exact shape feasible() consumes, sorted by start.
+ */
+export async function cabChain(registration, startMs, endMs) {
+  const r = await call('/fis/cds/trip/cab/trip-history',
+    { registration, startTime: startMs, endTime: endMs, allBuids: true });
+  const geo = (s) => {
+    const [a, b] = String(s || '').split(',').map(Number);
+    return Number.isFinite(a) && Number.isFinite(b) ? [a, b] : [null, null];
+  };
+  const chain = [];
+  for (const trips of Object.values(r || {})) {
+    for (const t of trips || []) {
+      if (!t || !t.startTime || !t.endTime) continue;
+      if (t.tripStatus === 'Cancelled') continue;
+      const emp = t.employees || [];
+      const [slat, slng] = geo(emp[0]?.pickupLoc?.geoCord);
+      const [elat, elng] = geo(emp[emp.length - 1]?.dropLoc?.geoCord);
+      chain.push({
+        start: t.startTime / 1000, end: t.endTime / 1000,
+        slat, slng, elat, elng,
+        label: `${t.direction || ''} ${t.shift || ''} (${t.buid || '?'})`.trim(),
+        tripId: t.tripId, status: t.tripStatus,
+      });
+    }
+  }
+  chain.sort((a, b) => a.start - b.start);
+  return chain;
 }

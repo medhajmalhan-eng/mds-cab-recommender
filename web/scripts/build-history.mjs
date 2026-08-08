@@ -196,10 +196,21 @@ async function main() {
       if (!buid || !office) continue;
 
       let b = bus.get(buid);
-      if (!b) { b = { shards: new Map(), cabIdx: new Map(), cabs: [], stat: new Map() }; bus.set(buid, b); }
+      if (!b) { b = { shards: new Map(), cabIdx: new Map(), cabs: [], stat: new Map(), meta: new Map() }; bus.set(buid, b); }
 
       let ci = b.cabIdx.get(cab);
       if (ci === undefined) { ci = b.cabs.push(cab) - 1; b.cabIdx.set(cab, ci); }
+
+      // Most recent master vendor + capacity per cab. The candidate pool is now
+      // built FROM these shards (not from MDS's suggestion list), and the
+      // deployer assigns within the trip's MASTER vendor — vendor_id here is in
+      // MDS's own vocabulary, unlike subvendor_name which is not. Days arrive in
+      // arbitrary order (parallel fetch), so keep the latest by date.
+      const ven = clean(r.vendor_id);
+      const cap = parseInt(r.actual_cab_capacity, 10) || 0;
+      const sv = clean(r.subvendor_name);
+      const cur = b.meta.get(ci);
+      if (!cur || day > cur[3]) b.meta.set(ci, [ven, cap, sv, day]);
 
       const key = `${office}|${dir}`;
       let s = b.shards.get(key);
@@ -234,6 +245,11 @@ async function main() {
       window_days: WINDOW_DAYS,
       from: days[0], to: days[days.length - 1],
       cabs: b.cabs,
+      // cabIdx -> [master_vendor, capacity, subvendor]. The subvendor is the
+      // real operating unit — the master is a client-facing placeholder — and
+      // deployers assign the trip's subvendor BEFORE picking a cab, so it is a
+      // candidate filter whenever the trip carries one.
+      cab_meta: Object.fromEntries([...b.meta].map(([ci, [v, c, sv]]) => [ci, [v, c, sv]])),
       shards: Object.fromEntries(b.shards),
       faults,
     };
@@ -250,6 +266,7 @@ async function main() {
 
   index.sort((a, b) => b.trips_30d - a.trips_30d);
   await writeFile(path.join(OUT, 'buids.json'), JSON.stringify({
+    format: 2,                    // 2 = shards carry cab_meta (vendor+capacity)
     built_at: new Date().toISOString(),
     window_days: WINDOW_DAYS,
     from: days[0], to: days[days.length - 1],
