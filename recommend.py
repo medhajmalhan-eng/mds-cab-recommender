@@ -62,6 +62,14 @@ DUTY_W         = 16.0   # weight on "does this cab work this hour at all", score
                         # with NO distance restriction. Swept 1..32: top-1 plateaus
                         # near 16, top-5 still climbing at 32. 16 is the knee.
 DUTY_TAU       = 60.0   # minutes, for the duty term. 60 beat 120 and 240.
+# SOFT TIER — TESTED AND REJECTED (2026-08-08). Replacing the lexicographic
+# exact-route tier with a multiplicative blend looked good on the honest
+# backtest (+2.1 top-1 in-sample, +1.5 held out, ~9k trips) but FAILED the
+# paired test on 146 live pre-assignment decisions: 1 gain vs 4 losses in
+# top-5. The backtest population (all waves, daytime-dense) is not the live
+# sample; the hard tier's "one exact trip beats any area cab" is apparently
+# closer to how deployers actually think than the blend. Do not re-add without
+# a live paired win.
 FEASIBILITY_BUFFER_MIN = 30
 MAX_DEADHEAD_KM = 60    # a cab this far from the pickup cannot serve it. Vendor
                         # pools are city-wide — Ivy has a Pune office, so a

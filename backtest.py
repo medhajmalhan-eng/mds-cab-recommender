@@ -70,6 +70,16 @@ def main():
     p.add_argument("--window", type=int, default=30)
     p.add_argument("--show", type=int, default=15, help="per-trip lines to print")
     p.add_argument("--cross-vendor", action="store_true", help="Layer 2: drop the vendor filter")
+    p.add_argument("--exact-km", type=float, default=1.0,
+                   help="tier-1 route radius. 27 of 143 live decisions sat at rank 6-15 with "
+                        "the chosen cab's nearest history 1.6 km away — area-familiar, but "
+                        "outside the 1.0 km exact tier, so every tier-1 cab outranked it.")
+    p.add_argument("--tier-delta", type=int, default=0,
+                   help="minutes of shift slack allowed into tier 1 (0 = exact shift only)")
+    p.add_argument("--soft-tier", type=float, default=0.0,
+                   help="replace the LEXICOGRAPHIC tier (any exact-route cab beats every "
+                        "non-exact cab) with a blend: score = kernel * (1 + B*exact_w). "
+                        "0 = keep the hard tier.")
     p.add_argument("--sv-filter", action="store_true",
                    help="filter candidates to the trip's SUBVENDOR (the deployer's real "
                         "workflow: subvendor is assigned to the trip first, cab second — "
@@ -204,13 +214,20 @@ def main():
                         sim = (0.0 if (hsh_m is None or sh_m is None)
                                else math.exp(-circ(hsh_m, sh_m) / TOD_TAU))
                         kern += math.exp(-d / KERNEL_KM) * (1 + SHIFT_BONUS * sim) * r
-                        if d <= EXACT_KM and hsh_m is not None and hsh_m == sh_m:
+                        if (d <= a.exact_km and hsh_m is not None and sh_m is not None
+                                and circ(hsh_m, sh_m) <= a.tier_delta):
                             n_ex += 1; ex_w += r
                     n_rows = len(rows)
                     k = kern / n_rows ** SPEC * (1 + DUTY_W * (duty / n_rows))
                     if a.sv_w > 0:
                         k *= (1 + a.sv_w * sv_aff.get(cab_sv.get(cab), 0.0))
-                    scored.append((0 if n_ex else 1, -ex_w, -k, cab))
+                    if a.soft_tier > 0:
+                        # no lexicographic tier: exact-route evidence multiplies the
+                        # kernel instead of trumping it, so a strong area cab can
+                        # outrank a weak exact-route one
+                        scored.append((0, 0.0, -k * (1 + a.soft_tier * ex_w), cab))
+                    else:
+                        scored.append((0 if n_ex else 1, -ex_w, -k, cab))
                 scored.sort()
                 pool_sizes.append(len(scored))
                 order = [c[-1] for c in scored]

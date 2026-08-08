@@ -47,6 +47,10 @@ export const TOD_TAU = 30.0;       // minutes; swept 15..180, flat 30-45, worse 
 export const TIER_DELTA_MIN = 0;   // tier 1 still requires an EXACT match — untested otherwise
 export const DUTY_W = 16.0;        // weight on "works this hour at all", no distance filter
 export const DUTY_TAU = 60.0;      // minutes; 60 beat 120 and 240
+// SOFT TIER — TESTED AND REJECTED (2026-08-08): multiplicative blend instead of
+// the lexicographic exact-route tier won on the backtest (+2 top-1, held out
+// too) but lost the PAIRED test on 146 live decisions, 1 gain vs 4 losses in
+// top-5. Do not re-add without a live paired win.
 
 // A cab this far from the pickup cannot serve it. Vendor pools are city-wide —
 // Ivy has a Pune office, so a Hyderabad trip's pool contains MH-plated Pune cabs

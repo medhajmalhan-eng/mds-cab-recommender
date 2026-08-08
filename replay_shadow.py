@@ -90,16 +90,16 @@ def main():
         # candidates: every cab seen at this site+direction in the window,
         # with its most recent vendor and capacity
         rows = db.execute(
-            """SELECT TRIM(cab_reg), vendor_id, capacity, day FROM trips
+            """SELECT TRIM(cab_reg), vendor_id, capacity, day, eff_vendor FROM trips
                WHERE bunit_id=? AND office=? AND trip_direction=?
                  AND day<? AND day>=? AND cab_reg IS NOT NULL""",
             (r["buid"], p["office"], direction, day, lo)).fetchall()
         if not rows:
             continue
         latest = {}
-        for cab, ven, cap, d in rows:
+        for cab, ven, cap, d, sv in rows:
             if cab not in latest or d > latest[cab][2]:
-                latest[cab] = (ven, cap, d)
+                latest[cab] = (ven, cap, d, sv)
 
         chosen = r["chosen"]
         in_hist = chosen in latest
@@ -111,10 +111,18 @@ def main():
 
         pool = []
         chosen_vendor_excluded = False
-        for cab, (ven, cap, _d) in latest.items():
+        want_sv = (p.get("subvendor") or "").strip()   # only new-pipeline logs carry it
+        for cab, (ven, cap, _d, sv) in latest.items():
             if want_cap and cap and cap != want_cap:
                 continue
-            if p.get("vendor") and not vendor_match(p["vendor"], ven):
+            if want_sv:
+                # trip's subvendor known at prediction time -> hard filter,
+                # exactly as the shipped candidatesFor() does
+                if (sv or "").strip() != want_sv:
+                    if cab == chosen:
+                        chosen_vendor_excluded = True
+                    continue
+            elif p.get("vendor") and not vendor_match(p["vendor"], ven):
                 if cab == chosen:
                     chosen_vendor_excluded = True
                 continue
@@ -176,7 +184,7 @@ def main():
           f"({100*cov_hist/n:.0f}%)")
     print(f"          survived capacity+vendor filters:       {cov_filtered}/{n} "
           f"({100*cov_filtered/n:.0f}%)")
-    print(f"          excluded by the VENDOR fuzzy match:     {vendor_excluded_chosen}  "
+    print(f"          excluded by the vendor/SV filter:           {vendor_excluded_chosen}  "
           f"<- mapping errors, fixable\n")
     med = sorted(s["candidates"] for s in scored)[n // 2]
     print(f"median candidates: {med} (history)   — no feasibility applied, so this is a LOWER bound\n")
