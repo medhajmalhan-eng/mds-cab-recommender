@@ -11,6 +11,19 @@
   command = "npm run build"
   publish = "public"
 
+  # Skip the build when a push only touched shadow/.
+  #
+  # The shadow sweep commits measurement data to main every 2 hours. Netlify
+  # rebuilds on every push by default, and each rebuild re-runs the 4-minute
+  # Metabase fetch — ~12 builds a day, ~1,440 minutes a month against a 300
+  # minute free tier. The site would have stopped building entirely within a
+  # week, freezing the deployer screen AND the nightly refresh with it.
+  #
+  # Exit 0 = skip. So: skip when nothing outside shadow/ changed.
+  # ':(top,exclude)' is top-level-relative, which matters because this command
+  # runs from the base directory (web/), not the repo root.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- ':(top,exclude)shadow/'"
+
 [functions]
   directory = "netlify/functions"
   # The history shards live in web/data/, NOT web/public/, because they carry
