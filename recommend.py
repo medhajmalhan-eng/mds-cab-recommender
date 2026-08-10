@@ -389,9 +389,7 @@ def score_pool(trip, pool, hist, wave_assigned=(), cross_vendor=False, topn=5,
         out.sort(key=lambda r: (r["tier"], -r["exact_score"], -r["kernel"], r["fault_rate"]))
     for r in out:
         r["evidence"] = evidence(r)
-        r["confidence"] = ("weak" if no_anchor else
-                           ("strong" if r["tier"] == 1 else
-                            ("medium" if r["n_history"] else "weak")))
+        r["confidence"] = confidence_of(r, no_anchor)
 
     # For an already-deployed trip: where did the cab the deployer actually chose
     # land in our ranking? Lets a whole finished wave be checked at a glance,
@@ -415,6 +413,29 @@ def score_pool(trip, pool, hist, wave_assigned=(), cross_vendor=False, topn=5,
     if find_cab:
         res.append(found)
     return tuple(res)
+
+
+# Calibrated against 549 live pre-assignment decisions (2026-08-08..10), by how
+# often the deployer's actual pick landed in our top-5 when the #1 card carried
+# this much evidence:
+#     0 exact-route trips  -> 24%      1-3 -> ~30%      4+ -> 48%
+# The old rule called ANY cab with one exact trip "strong", which covered 417 of
+# 549 cards and predicted 34.8% — barely above "medium" at 25%. A label that
+# fires on three quarters of cards tells a deployer nothing. These thresholds
+# are the observed breakpoints, not a guess, and should be re-derived as the
+# shadow log grows.
+STRONG_EXACT = 4
+MEDIUM_EXACT = 1
+
+
+def confidence_of(r, no_anchor=False):
+    if no_anchor:
+        return "weak"
+    if r["n_exact"] >= STRONG_EXACT:
+        return "strong"
+    if r["n_exact"] >= MEDIUM_EXACT or r["n_history"]:
+        return "medium"
+    return "weak"
 
 
 def evidence(r):

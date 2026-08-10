@@ -76,6 +76,11 @@ def main():
                         "outside the 1.0 km exact tier, so every tier-1 cab outranked it.")
     p.add_argument("--tier-delta", type=int, default=0,
                    help="minutes of shift slack allowed into tier 1 (0 = exact shift only)")
+    p.add_argument("--tier-min-exact", type=int, default=1,
+                   help="how many exact-route trips a cab needs to enter tier 1. Live data: "
+                        "a cab with ONE exact trip goes top-1 9.5%% of the time — worse than a "
+                        "cab with none (10.6%%) — while 4+ jumps to 28.0%%. The tier promotes "
+                        "1-trip cabs above every area cab, which is the wrong boundary.")
     p.add_argument("--soft-tier", type=float, default=0.0,
                    help="replace the LEXICOGRAPHIC tier (any exact-route cab beats every "
                         "non-exact cab) with a blend: score = kernel * (1 + B*exact_w). "
@@ -221,6 +226,9 @@ def main():
                     k = kern / n_rows ** SPEC * (1 + DUTY_W * (duty / n_rows))
                     if a.sv_w > 0:
                         k *= (1 + a.sv_w * sv_aff.get(cab_sv.get(cab), 0.0))
+                    if n_ex < a.tier_min_exact:
+                        n_ex = 0          # not enough evidence to outrank the kernel
+                        ex_w = 0.0
                     if a.soft_tier > 0:
                         # no lexicographic tier: exact-route evidence multiplies the
                         # kernel instead of trumping it, so a strong area cab can

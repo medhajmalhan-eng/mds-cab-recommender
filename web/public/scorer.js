@@ -436,8 +436,7 @@ export function scorePool(trip, pool, hist, {
 
   for (const r of out) {
     r.evidence = evidence(r);
-    r.confidence = noAnchor ? 'weak'
-      : (r.tier === 1 ? 'strong' : (r.n_history ? 'medium' : 'weak'));
+    r.confidence = confidenceOf(r, noAnchor);
   }
 
   // For an already-deployed trip: where did the cab the deployer actually chose
@@ -459,6 +458,22 @@ export function scorePool(trip, pool, hist, {
 
   return { top: out.slice(0, topn), eligible: out.length, all: out, rejects, found,
            noAnchor, noCapacity: noCap };
+}
+
+// Calibrated against 549 live pre-assignment decisions (2026-08-08..10): the
+// deployer's pick reached our top-5 24% of the time when the #1 card had NO
+// exact-route history, ~30% at 1-3, and 48% at 4+. The old rule called any cab
+// with one exact trip "strong" — 417 of 549 cards, predicting 34.8%, barely
+// above "medium" at 25%. A label that fires on three quarters of cards tells a
+// deployer nothing. Re-derive as the shadow log grows.
+export const STRONG_EXACT = 4;
+export const MEDIUM_EXACT = 1;
+
+export function confidenceOf(r, noAnchor = false) {
+  if (noAnchor) return 'weak';
+  if (r.n_exact >= STRONG_EXACT) return 'strong';
+  if (r.n_exact >= MEDIUM_EXACT || r.n_history) return 'medium';
+  return 'weak';
 }
 
 export function evidence(r) {
