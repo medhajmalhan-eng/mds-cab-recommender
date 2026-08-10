@@ -34,7 +34,12 @@ const EXEC = process.env.APPS_SCRIPT_EXEC_URL || '';
 const TOKEN = process.env.APPS_SCRIPT_TOKEN || '';
 const CARD = process.env.METABASE_CARD_ID || '130776';
 const WINDOW_DAYS = +(process.env.HISTORY_WINDOW_DAYS || 30);
-const CONCURRENCY = 6;            // the proxy is a Google Apps Script; be polite
+// 6 was too aggressive: Metabase returned HTTP 400s on ~8 of 30 days, the retry
+// backoff pushed the build to 14 minutes (420 min/month against a 300-minute
+// free tier), and worse, two days came back TRUNCATED and were accepted
+// silently — 2026-07-17 gave 3,970 rows against a true 7,706, and 2026-07-19
+// gave 95 against 863.
+const CONCURRENCY = 3;
 const MAX_MISSING_DAYS = 3;       // a hole or two is survivable, a gap is not
 
 const iso = (d) => d.toISOString().slice(0, 10);
@@ -104,7 +109,20 @@ async function fetchDay(day, attempt = 1) {
     // The proxy returns HTTP 200 with a JSON error envelope on failure, so the
     // status code alone cannot distinguish success from failure.
     if (text.trimStart().startsWith('{')) throw new Error(text.slice(0, 200));
-    return parseCSV(text);
+    // A cut-off response is the dangerous failure: it parses fine and looks
+    // like a quiet day. Two signals, both cheap:
+    //   - the body must end on a line boundary
+    //   - parseCSV drops rows whose column count is wrong, so a big drop
+    //     between raw lines and parsed rows means the tail was mangled
+    if (text.length && !text.endsWith('\n')) {
+      throw new Error(`truncated response (${text.length} bytes, no trailing newline)`);
+    }
+    const rows = parseCSV(text);
+    const rawLines = text.trimEnd().split('\n').length - 1;   // minus header
+    if (rawLines > 0 && rows.length < rawLines * 0.99) {
+      throw new Error(`malformed CSV: ${rows.length} parsed of ${rawLines} lines`);
+    }
+    return rows;
   } catch (e) {
     if (attempt < 3) {
       console.warn(`   retry ${attempt} for ${day}: ${String(e.message).slice(0, 120)}`);
@@ -155,6 +173,46 @@ async function main() {
       return { day: d, rows: [] };
     }
   });
+
+  // ── truncation sweep ──────────────────────────────────────────────────
+  // Silent short days are the failure mode that matters, and they are only
+  // visible in context: weekends legitimately run ~10% of a weekday, so a flat
+  // row-count floor cannot tell "Sunday" from "cut off". Compare each day
+  // against the MEDIAN OF THE SAME WEEKDAY in this window, and re-fetch anything
+  // under 60% of it. Serially, because the cause was concurrency.
+  const dow = (d) => new Date(`${d}T00:00:00Z`).getUTCDay();
+  const byDow = new Map();
+  for (const r of perDay) {
+    if (!byDow.has(dow(r.day))) byDow.set(dow(r.day), []);
+    byDow.get(dow(r.day)).push(r.rows.length);
+  }
+  const medians = new Map([...byDow].map(([k, v]) => {
+    const s2 = [...v].sort((a, b) => a - b);
+    return [k, s2[Math.floor(s2.length / 2)]];
+  }));
+  for (const r of perDay) {
+    const med = medians.get(dow(r.day)) || 0;
+    if (!med || r.rows.length >= med * 0.6) continue;
+    console.warn(`   ${r.day}: ${r.rows.length} rows vs ${med} median for that weekday — refetching`);
+    try {
+      const again = await fetchDay(r.day);
+      if (again.length > r.rows.length) {
+        console.log(`   ${r.day}: recovered ${again.length} rows (was ${r.rows.length})`);
+        r.rows = again;
+      }
+    } catch (e) {
+      console.warn(`   ${r.day}: refetch failed: ${String(e.message).slice(0, 120)}`);
+    }
+    // Still short after a clean serial retry: refuse to publish. A day missing
+    // half its trips skews recency weighting and hides cabs from candidacy —
+    // worse than an obviously failed build, because nothing looks wrong.
+    const med2 = medians.get(dow(r.day)) || 0;
+    if (med2 && r.rows.length < med2 * 0.6) {
+      console.error(`\n${r.day} is still short (${r.rows.length} vs ${med2} typical for that weekday).`);
+      console.error('Refusing to publish a silently-truncated history.');
+      process.exit(1);
+    }
+  }
 
   if (failed.length > MAX_MISSING_DAYS) {
     console.error(`\n${failed.length} of ${WINDOW_DAYS} days failed (${failed.join(', ')}).`);

@@ -57,7 +57,8 @@ jobs:
         with:
           path: web/data
           key: history-${{ github.run_id }}
-          restore-keys: history-
+          restore-keys: |
+            history-
 
       - name: Build history if the cache is cold or stale
         working-directory: web
@@ -69,14 +70,23 @@ jobs:
           # Stale means "built for a different day". Recency weighting is
           # relative to build date, so yesterday's shard quietly mis-weights
           # every cab by a day.
-          BUILT=$(node -e "try{const j=JSON.parse(require('fs').readFileSync('data/buids.json'));console.log((j.format===2?j.built_at.slice(0,10):'old-format'))}catch(e){console.log('none')}")
-          TODAY=$(TZ=Asia/Kolkata date +%F)
-          if [ "$BUILT" != "$TODAY" ]; then
-            echo "history is '$BUILT', today is '$TODAY' — rebuilding"
-            node scripts/build-history.mjs
-          else
-            echo "history already built for $TODAY"
+          # Rebuild only when the shard is MORE THAN 3 DAYS old, not daily.
+          # The 30-day window barely moves in a day, but each rebuild is 30
+          # Metabase queries through an Apps Script proxy with hard quotas —
+          # running it daily (plus Netlify doing the same) exhausted them and a
+          # rebuild then failed 26 of 30 days. Measurement matters more than a
+          # perfectly fresh edge day, so stale-but-working beats fresh-or-broken.
+          AGE=$(node -e "try{const j=JSON.parse(require('fs').readFileSync('data/buids.json'));
+            console.log(j.format===2?Math.floor((Date.now()-Date.parse(j.built_at))/86400000):999)}catch(e){console.log(999)}")
+          echo "history shard is $AGE day(s) old"
+          if [ "$AGE" -gt 3 ]; then
+            node scripts/build-history.mjs || {
+              echo "REBUILD FAILED — continuing with the existing shard so the sweep still runs."
+              echo "Measurement on slightly stale history is far better than no measurement."
+            }
           fi
+          # Never proceed with no shard at all.
+          test -f data/buids.json || { echo "no history shard available at all"; exit 1; }
 
       - name: Sweep
         working-directory: web
