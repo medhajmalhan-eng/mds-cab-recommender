@@ -77,7 +77,7 @@ jobs:
           # rebuild then failed 26 of 30 days. Measurement matters more than a
           # perfectly fresh edge day, so stale-but-working beats fresh-or-broken.
           AGE=$(node -e "try{const j=JSON.parse(require('fs').readFileSync('data/buids.json'));
-            console.log(j.format===2?Math.floor((Date.now()-Date.parse(j.built_at))/86400000):999)}catch(e){console.log(999)}")
+            console.log(j.format===3?Math.floor((Date.now()-Date.parse(j.built_at))/86400000):999)}catch(e){console.log(999)}")
           echo "history shard is $AGE day(s) old"
           if [ "$AGE" -gt 3 ]; then
             node scripts/build-history.mjs || {

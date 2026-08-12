@@ -254,7 +254,7 @@ async function main() {
       if (!buid || !office) continue;
 
       let b = bus.get(buid);
-      if (!b) { b = { shards: new Map(), cabIdx: new Map(), cabs: [], stat: new Map(), meta: new Map() }; bus.set(buid, b); }
+      if (!b) { b = { shards: new Map(), cabIdx: new Map(), cabs: [], stat: new Map(), meta: new Map(), svs: new Map(), caps: new Map() }; bus.set(buid, b); }
 
       let ci = b.cabIdx.get(cab);
       if (ci === undefined) { ci = b.cabs.push(cab) - 1; b.cabIdx.set(cab, ci); }
@@ -269,6 +269,12 @@ async function main() {
       const sv = clean(r.subvendor_name);
       const cur = b.meta.get(ci);
       if (!cur || day > cur[3]) b.meta.set(ci, [ven, cap, sv, day]);
+      // EVERY subvendor and capacity this cab has worked under in the window,
+      // not just its most recent. Cabs move between subvendors, and taking the
+      // latest wrongly excluded the deployer's own pick in 19 of 744 live
+      // decisions — the cab HAD worked that subvendor, just not most recently.
+      if (sv) (b.svs.get(ci) || b.svs.set(ci, new Set()).get(ci)).add(sv);
+      if (cap) (b.caps.get(ci) || b.caps.set(ci, new Set()).get(ci)).add(cap);
 
       const key = `${office}|${dir}`;
       let s = b.shards.get(key);
@@ -307,7 +313,11 @@ async function main() {
       // real operating unit — the master is a client-facing placeholder — and
       // deployers assign the trip's subvendor BEFORE picking a cab, so it is a
       // candidate filter whenever the trip carries one.
-      cab_meta: Object.fromEntries([...b.meta].map(([ci, [v, c, sv]]) => [ci, [v, c, sv]])),
+      // [master_vendor, latest_capacity, latest_subvendor, all_capacities, all_subvendors]
+      // The trailing two are what candidate filtering uses; the first three stay
+      // for display and for reading a shard by eye.
+      cab_meta: Object.fromEntries([...b.meta].map(([ci, [v, c, sv]]) =>
+        [ci, [v, c, sv, [...(b.caps.get(ci) || [])], [...(b.svs.get(ci) || [])]]])),
       shards: Object.fromEntries(b.shards),
       faults,
     };
@@ -324,7 +334,7 @@ async function main() {
 
   index.sort((a, b) => b.trips_30d - a.trips_30d);
   await writeFile(path.join(OUT, 'buids.json'), JSON.stringify({
-    format: 2,                    // 2 = shards carry cab_meta (vendor+capacity)
+    format: 3,                    // 3 = cab_meta carries ALL subvendors/capacities seen
     built_at: new Date().toISOString(),
     window_days: WINDOW_DAYS,
     from: days[0], to: days[days.length - 1],

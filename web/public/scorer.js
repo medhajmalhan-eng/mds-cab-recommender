@@ -158,8 +158,16 @@ export class History {
     // and seat count, from its most recent trip at this BU. This is what lets
     // candidates come from history instead of MDS's suggestion list.
     this.meta = new Map();
-    for (const [ci, [vendor, capacity, subvendor]] of Object.entries(bundle.cab_meta || {})) {
-      this.meta.set(cabs[ci], { vendor, capacity, subvendor: subvendor || null });
+    for (const [ci, m] of Object.entries(bundle.cab_meta || {})) {
+      const [vendor, capacity, subvendor, caps, svs] = m;
+      this.meta.set(cabs[ci], {
+        vendor, capacity, subvendor: subvendor || null,
+        // Every capacity/subvendor seen in the window. Older (format 2) shards
+        // carry only the latest, so fall back to that rather than filtering
+        // everything out on a stale shard.
+        caps: caps && caps.length ? caps : (capacity ? [capacity] : []),
+        svs: svs && svs.length ? svs : (subvendor ? [subvendor] : []),
+      });
     }
   }
   get total() { return this.rows.length; }
@@ -191,14 +199,18 @@ export function candidatesFor(trip, hist, { crossVendor = false } = {}) {
   const out = [];
   for (const [cab, m] of hist.meta) {
     if (!hist.byCab.has(cab)) continue;          // meta exists but not at this office+dir
-    if (wantCap && m.capacity && m.capacity !== wantCap) continue;
+    // Match against ANY capacity/subvendor the cab has worked in the window,
+    // not just its most recent. Cabs move between subvendors and get
+    // reclassified; using only the latest wrongly excluded the deployer's own
+    // pick in 19 of 744 live decisions. Paired live test: +2 top-5, 0 losses.
+    if (wantCap && m.caps.length && !m.caps.includes(wantCap)) continue;
     if (!crossVendor) {
       if (wantSv) {
         // The trip already names its SUBVENDOR — the deployer's own workflow is
         // subvendor first, cab second (live waves show open trips carrying it).
         // Same vocabulary on both sides, so this is an exact match.
         // Backtested: +0.9 top-1 / +2.0 top-5 over the master-vendor filter.
-        if (String(m.subvendor || '').trim() !== wantSv) continue;
+        if (!m.svs.some((v) => String(v).trim() === wantSv)) continue;
       } else if (trip.vendor) {
         if (String(m.vendor || '').trim().toLowerCase() !== wantVendor) continue;
       }
