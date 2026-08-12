@@ -246,6 +246,12 @@ async function sweepBu(buid, day, stamp, budget) {
         no_anchor: out.noAnchor,
         no_capacity: out.noCapacity,
         history_trips: hist.total,
+        // WHICH history this prediction saw. The shard is rebuilt every ~3 days
+        // (quota limits), so "was this run on fresh data" has to be answerable
+        // from the log itself — inferring it from trip counts drifting is not
+        // good enough when the answer changes how a result is read.
+        history_window: shard.from && shard.to ? `${shard.from}..${shard.to}` : null,
+        history_built: shard.built_at || null,
         wave_assigned: [...already],
         recs: out.top.map((r) => ({
           cab: r.cab, tier: r.tier, kernel: +r.kernel.toFixed(6),
